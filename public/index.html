@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OMart.io | Lobby</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/index.css">
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+    <div class="ambient" aria-hidden="true">
+        <span class="orb orb-a"></span>
+        <span class="orb orb-b"></span>
+        <span class="orb orb-c"></span>
+        <span class="grid"></span>
+    </div>
+
+    <main class="lobby">
+        <section class="panel heroPanel">
+            <p class="heroKicker">Lobby oficial</p>
+            <div class="heroTitleRow">
+                <div class="heroLogoMark" aria-label="Logotipo OMart.io">
+                    <svg viewBox="0 0 640 220" role="img" aria-hidden="true" focusable="false">
+                        <defs>
+                            <linearGradient id="omFill" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="#d8ecff" />
+                                <stop offset="32%" stop-color="#3aa0ff" />
+                                <stop offset="70%" stop-color="#0b2d63" />
+                                <stop offset="100%" stop-color="#06122e" />
+                            </linearGradient>
+                            <linearGradient id="omShine" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stop-color="#f7fbff" />
+                                <stop offset="40%" stop-color="#8ad6ff" />
+                                <stop offset="100%" stop-color="#2c5ed4" />
+                            </linearGradient>
+                            <filter id="omGlow" x="-20%" y="-30%" width="140%" height="180%">
+                                <feGaussianBlur stdDeviation="4.2" result="blur" />
+                                <feMerge>
+                                    <feMergeNode in="blur" />
+                                    <feMergeNode in="SourceGraphic" />
+                                </feMerge>
+                            </filter>
+                        </defs>
+                        <text x="14" y="168"
+                              fill="url(#omFill)"
+                              stroke="#040b16"
+                              stroke-width="14"
+                              paint-order="stroke fill"
+                              font-family="'Archivo Black', Impact, sans-serif"
+                              font-size="172"
+                              font-style="italic"
+                              letter-spacing="-8">OM</text>
+                        <text x="14" y="168"
+                              fill="none"
+                              stroke="url(#omShine)"
+                              stroke-width="5"
+                              opacity="0.92"
+                              font-family="'Archivo Black', Impact, sans-serif"
+                              font-size="172"
+                              font-style="italic"
+                              letter-spacing="-8">OM</text>
+                        <line x1="34" y1="118" x2="598" y2="118" stroke="#68d8ff" stroke-width="6" opacity="0.86" filter="url(#omGlow)" />
+                    </svg>
+                </div>
+                <div class="heroBrandBlock">
+                    <span class="heroAdminTag">ADM: Miau-Sensei</span>
+                    <span class="heroLogoText">art.io</span>
+                </div>
+            </div>
+            <p class="heroText">
+                Escolha uma sala, veja quem ja esta jogando e entre com seu nick.
+                As salas seguem tema + meta de pontos.
+            </p>
+
+            <label class="nickLabel" for="nick">Seu nick</label>
+            <input type="text" id="nick" placeholder="Digite seu nick" maxlength="24" autocomplete="nickname">
+
+            <section class="supportersCard" aria-label="Amigos apoiadores">
+                <h3>Amigos apoiadores</h3>
+                <table class="supportersTable">
+                    <tbody>
+                        <tr><td>lau</td><td>GENIO</td></tr>
+                        <tr><td>Edu_52</td><td>Lana_</td></tr>
+                        <tr><td>Mika</td><td>Samys_ys</td></tr>
+                        <tr><td>Hexx</td><td>carol</td></tr>
+                        <tr><td>geo_</td><td>mentiroso</td></tr>
+                        <tr><td>koyah</td><td>jxao44</td></tr>
+                        <tr><td>venus</td><td>foca_legal</td></tr>
+                        <tr><td>andrezim</td><td><span class="supporterLogoName">miau-sensei</span></td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <div class="heroBadges">
+                <span>Tempo real</span>
+                <span>Multiplayer</span>
+                <span>Check de nick</span>
+            </div>
+        </section>
+
+        <section class="panel roomsPanel">
+            <div class="roomsHead">
+                <h2>Salas abertas</h2>
+                <p>Clique em uma sala para abrir o preview e jogar.</p>
+            </div>
+
+            <div id="rooms" class="roomsGrid"></div>
+        </section>
+    </main>
+
+    <div id="roomPreviewOverlay" class="modal-backdrop">
+        <div class="modal-card">
+            <div class="modal-head">
+                <strong>Preview da sala</strong>
+                <button id="previewCloseBtn" class="modal-close" type="button">fechar</button>
+            </div>
+
+            <div id="previewRoomName" class="modal-room"></div>
+            <div><strong>Jogadores:</strong></div>
+            <ul id="previewPlayers"></ul>
+            <div id="previewError" class="modal-error"></div>
+            <button id="previewPlayBtn" class="modal-play" type="button">JOGAR</button>
+        </div>
+    </div>
+
+    <div class="footer">
+        Lobby com preview da sala
+    </div>
+
+    <script>
+        const socket = io();
+
+        const salas = [
+            "alimentos 3",
+            "alimentos 6",
+            "alimentos 9",
+            "animais 3",
+            "animais 6",
+            "animais 9",
+            "objetos 3",
+            "objetos 6",
+            "objetos 9",
+            "geral 3",
+            "geral 6",
+            "geral 9",
+            "pokemon 3",
+            "pokemon 6",
+            "pokemon 9"
+        ];
+
+        const ROOM_META = {
+            alimentos: { label: "Alimentos", accent: "room--food" },
+            animais: { label: "Animais", accent: "room--animals" },
+            objetos: { label: "Objetos", accent: "room--objects" },
+            geral: { label: "Geral", accent: "room--general" },
+            pokemon: { label: "Pokemon", accent: "room--pokemon" }
+        };
+
+        const ROOM_DIFFICULTY_META = {
+            3: { label: "Facil", winScore: 120, playerLimit: 10 },
+            6: { label: "Medio", winScore: 150, playerLimit: 12 },
+            9: { label: "Dificil", winScore: 175, playerLimit: 15 }
+        };
+        const DEFAULT_ROOM_LIMIT = 12;
+        const PREVIEW_POLL_MS = 2000;
+        const ADMIN_NICK_RESERVED = "Miau-Sensei";
+        const ADMIN_KEY_SESSION_KEY = "omart_admin_key";
+
+        const roomsDiv = document.getElementById("rooms");
+        const nickInput = document.getElementById("nick");
+
+        const previewOverlay = document.getElementById("roomPreviewOverlay");
+        const previewRoomName = document.getElementById("previewRoomName");
+        const previewPlayers = document.getElementById("previewPlayers");
+        const previewError = document.getElementById("previewError");
+        const previewCloseBtn = document.getElementById("previewCloseBtn");
+        const previewPlayBtn = document.getElementById("previewPlayBtn");
+        const roomCountEls = new Map();
+
+        let selectedRoom = null;
+        let previewPoll = null;
+        let validating = false;
+
+        function setPreviewError(text = "") {
+            previewError.textContent = text;
+        }
+
+        function setPlayButtonLoading(isLoading) {
+            previewPlayBtn.disabled = isLoading;
+            previewPlayBtn.style.opacity = isLoading ? "0.6" : "1";
+        }
+
+        function stopPreviewPolling() {
+            if (previewPoll) {
+                clearInterval(previewPoll);
+                previewPoll = null;
+            }
+        }
+
+        function renderPreviewPlayers(players) {
+            previewPlayers.innerHTML = "";
+
+            const list = Array.isArray(players) ? players : [];
+            if (!list.length) {
+                const li = document.createElement("li");
+                li.textContent = "Sala vazia.";
+                previewPlayers.appendChild(li);
+                return;
+            }
+
+            list.forEach((player) => {
+                const li = document.createElement("li");
+                const nick = String(player && player.nick ? player.nick : "?");
+                const score = Number(player && player.score ? player.score : 0);
+                const isAdmin = !!(player && player.isAdmin === true);
+                li.textContent = `${isAdmin ? "👑 " : ""}${nick} - ${score}`;
+                previewPlayers.appendChild(li);
+            });
+        }
+
+        function requestRoomInfo() {
+            if (!selectedRoom) return;
+            socket.emit("getRoomInfo", { roomId: selectedRoom });
+        }
+
+        function getRoomDifficultyMeta(roomId) {
+            const parts = String(roomId || "").trim().split(/\s+/);
+            const level = Number(parts[1] || "");
+            return ROOM_DIFFICULTY_META[level] || null;
+        }
+
+        function getRoomPlayerLimit(roomId) {
+            const meta = getRoomDifficultyMeta(roomId);
+            return meta ? Number(meta.playerLimit || DEFAULT_ROOM_LIMIT) : DEFAULT_ROOM_LIMIT;
+        }
+
+        function formatPlayersCount(current, limit) {
+            const cur = Math.max(0, Number(current) || 0);
+            const lim = Math.max(1, Number(limit) || DEFAULT_ROOM_LIMIT);
+            return `${String(cur).padStart(2, "0")}/${String(lim).padStart(2, "0")}`;
+        }
+
+        function updateRoomCardCount(roomId, players) {
+            const key = String(roomId || "").trim();
+            if (!key) return;
+            const entry = roomCountEls.get(key);
+            if (!entry || !entry.el) return;
+
+            const count = Array.isArray(players) ? players.length : 0;
+            entry.el.textContent = formatPlayersCount(count, entry.limit);
+            entry.el.classList.toggle("is-full", count >= entry.limit);
+        }
+
+        function applyLobbyRoomCounts(countsRaw) {
+            const counts = countsRaw && typeof countsRaw === "object" ? countsRaw : {};
+            roomCountEls.forEach((entry, roomId) => {
+                const count = Math.max(0, Number(counts[roomId]) || 0);
+                entry.el.textContent = formatPlayersCount(count, entry.limit);
+                entry.el.classList.toggle("is-full", count >= entry.limit);
+            });
+        }
+
+        function updateRoomSelectionState() {
+            const cards = roomsDiv.querySelectorAll(".room");
+            cards.forEach((card) => {
+                const isActive = card.dataset.roomId === selectedRoom;
+                card.classList.toggle("is-active", isActive);
+            });
+        }
+
+        function openPreview(roomId) {
+            selectedRoom = roomId;
+            previewRoomName.textContent = roomId;
+            setPreviewError("");
+            setPlayButtonLoading(false);
+            renderPreviewPlayers([]);
+            previewOverlay.style.display = "flex";
+            updateRoomSelectionState();
+
+            requestRoomInfo();
+            stopPreviewPolling();
+            previewPoll = setInterval(requestRoomInfo, PREVIEW_POLL_MS);
+        }
+
+        function closePreview() {
+            selectedRoom = null;
+            setPreviewError("");
+            setPlayButtonLoading(false);
+            stopPreviewPolling();
+            previewOverlay.style.display = "none";
+            updateRoomSelectionState();
+        }
+
+        function createSessionToken() {
+            if (window.crypto && typeof window.crypto.randomUUID === "function") {
+                return window.crypto.randomUUID();
+            }
+            return `tok-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        }
+
+        function isReservedAdminNick(nick) {
+            return String(nick || "").trim().toLowerCase() === ADMIN_NICK_RESERVED.toLowerCase();
+        }
+
+        function resolveAdminKeyForNick(nick) {
+            if (!isReservedAdminNick(nick)) {
+                sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+                return "";
+            }
+
+            const saved = String(sessionStorage.getItem(ADMIN_KEY_SESSION_KEY) || "").trim();
+            const typed = window.prompt(`Digite a chave para usar o nick "${ADMIN_NICK_RESERVED}":`, saved);
+            if (typed == null) return null;
+            const key = String(typed).trim();
+            if (!key) return null;
+
+            sessionStorage.setItem(ADMIN_KEY_SESSION_KEY, key);
+            return key;
+        }
+
+        function saveSessionAndGo(roomId, nick) {
+            const token = createSessionToken();
+            sessionStorage.setItem("omart_token", token);
+            sessionStorage.setItem("omart_room", roomId);
+            sessionStorage.setItem("omart_nick", nick);
+
+            if (isReservedAdminNick(nick)) {
+                const adminKey = String(sessionStorage.getItem(ADMIN_KEY_SESSION_KEY) || "").trim();
+                if (adminKey) sessionStorage.setItem(ADMIN_KEY_SESSION_KEY, adminKey);
+            } else {
+                sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+            }
+
+            window.location.href =
+                `/game.html?room=${encodeURIComponent(roomId)}&nick=${encodeURIComponent(nick)}`;
+        }
+
+        function validateAndPlay() {
+            if (validating || !selectedRoom) return;
+
+            const roomId = selectedRoom;
+            const nick = nickInput.value.trim();
+
+            if (!nick) {
+                setPreviewError("Digite um nick");
+                return;
+            }
+
+            const adminKey = resolveAdminKeyForNick(nick);
+            if (adminKey === null) {
+                setPreviewError("Chave obrigatoria para esse nick.");
+                return;
+            }
+
+            validating = true;
+            setPlayButtonLoading(true);
+            setPreviewError("");
+
+            const payload = { roomId, nick };
+            if (isReservedAdminNick(nick)) payload.adminKey = adminKey;
+
+            socket.emit("checkNick", payload, (res) => {
+                validating = false;
+                setPlayButtonLoading(false);
+
+                if (selectedRoom !== roomId) return;
+
+                if (!res || !res.ok) {
+                    const reason = res && res.reason ? res.reason : "UNKNOWN";
+
+                    if (reason === "NICK_TAKEN") {
+                        setPreviewError("Nick ja existe");
+                        return;
+                    }
+
+                    if (reason === "ROOM_FULL") {
+                        setPreviewError("Sala cheia");
+                        return;
+                    }
+
+                    if (reason === "NICK_REQUIRED") {
+                        setPreviewError("Digite um nick");
+                        return;
+                    }
+
+                    if (reason === "NICK_BLOCKED") {
+                        setPreviewError("Esse nick e reservado. Chave invalida.");
+                        sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+                        return;
+                    }
+
+                    setPreviewError("Nao foi possivel entrar");
+                    return;
+                }
+
+                saveSessionAndGo(roomId, nick);
+            });
+        }
+
+        function buildRoomCard(roomId) {
+            const raw = String(roomId || "");
+            const [themeKey = "geral", targetRaw = "?"] = raw.split(/\s+/);
+            const meta = ROOM_META[themeKey] || ROOM_META.geral;
+            const level = Number(targetRaw);
+            const difficultyMeta = ROOM_DIFFICULTY_META[level] || null;
+            const difficultyLabel = difficultyMeta ? difficultyMeta.label : "Personalizada";
+            const winScore = difficultyMeta ? difficultyMeta.winScore : Number.isFinite(level) ? level : targetRaw;
+            const pointsLabel = `${winScore} pontos`;
+            const playerLimit = getRoomPlayerLimit(raw);
+
+            const card = document.createElement("button");
+            card.type = "button";
+            card.className = `room ${meta.accent}`;
+            card.dataset.roomId = raw;
+            card.innerHTML = `
+                <span class="roomTheme">${meta.label}</span>
+                <strong class="roomName">${raw}</strong>
+                <span class="roomBadge">${difficultyLabel}</span>
+                <span class="roomPlayers">${formatPlayersCount(0, playerLimit)}</span>
+                <span class="roomTarget">${pointsLabel}</span>
+            `;
+
+            const roomPlayersEl = card.querySelector(".roomPlayers");
+            roomCountEls.set(raw, { el: roomPlayersEl, limit: playerLimit });
+
+            card.addEventListener("click", () => openPreview(raw));
+            return card;
+        }
+
+        salas.forEach((roomId) => {
+            roomsDiv.appendChild(buildRoomCard(roomId));
+        });
+
+        socket.on("connect", () => {
+            socket.emit("subscribeLobby");
+        });
+
+        socket.on("roomInfo", ({ roomId, players } = {}) => {
+            updateRoomCardCount(roomId, players);
+            if (!selectedRoom || roomId !== selectedRoom) return;
+            renderPreviewPlayers(players);
+        });
+
+        socket.on("lobbyRoomCounts", ({ counts } = {}) => {
+            applyLobbyRoomCounts(counts);
+        });
+
+        socket.on("joinRoomError", ({ roomId, reason } = {}) => {
+            if (!selectedRoom || roomId !== selectedRoom) return;
+            if (reason === "duplicate") setPreviewError("Nick ja existe");
+            if (reason === "nick_required") setPreviewError("Digite um nick");
+            if (reason === "nick_blocked") {
+                setPreviewError("Esse nick e reservado. Chave invalida.");
+                sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+            }
+        });
+
+        socket.on("nickBlocked", ({ roomId } = {}) => {
+            if (selectedRoom && roomId && roomId !== selectedRoom) return;
+            setPreviewError("Esse nick e reservado. Chave invalida.");
+            sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+        });
+
+        previewPlayBtn.addEventListener("click", validateAndPlay);
+        previewCloseBtn.addEventListener("click", closePreview);
+
+        previewOverlay.addEventListener("click", (e) => {
+            if (e.target === previewOverlay) closePreview();
+        });
+
+        document.addEventListener("keydown", (e) => {
+            if (e.key === "Escape" && selectedRoom) closePreview();
+        });
+
+        nickInput.addEventListener("keydown", (e) => {
+            if (e.key !== "Enter") return;
+
+            if (selectedRoom) {
+                validateAndPlay();
+                return;
+            }
+
+            const firstRoom = document.querySelector(".room");
+            if (firstRoom) firstRoom.click();
+        });
+
+        const inviteRoom = sessionStorage.getItem("omart_invite_room");
+        const inviteNick = sessionStorage.getItem("omart_invite_nick");
+
+        if (inviteNick && !nickInput.value.trim()) {
+            nickInput.value = inviteNick;
+        }
+
+        if (inviteRoom) {
+            const hint = document.createElement("div");
+            hint.className = "hint";
+            hint.innerHTML = `Voce tentou entrar na sala <b>${inviteRoom}</b>. Clique nela para entrar.`;
+            document.querySelector(".lobby").appendChild(hint);
+
+            const inviteRoomDiv = Array.from(document.querySelectorAll(".room"))
+                .find((el) => el.dataset.roomId === inviteRoom);
+
+            if (inviteRoomDiv) {
+                openPreview(inviteRoom);
+            }
+
+            sessionStorage.removeItem("omart_invite_room");
+            sessionStorage.removeItem("omart_invite_nick");
+        }
+
+        window.addEventListener("beforeunload", () => {
+            stopPreviewPolling();
+            socket.emit("unsubscribeLobby");
+        });
+    </script>
+</body>
+</html>

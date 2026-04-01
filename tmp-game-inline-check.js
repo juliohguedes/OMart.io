@@ -1,0 +1,3322 @@
+﻿(function () {
+      const socket = io();
+
+      const params = new URLSearchParams(window.location.search);
+      const roomId = params.get("room");
+      const nick = params.get("nick");
+      const ADMIN_NICK_RESERVED = "Miau-Sensei";
+      const ADMIN_KEY_SESSION_KEY = "omart_admin_key";
+      const ADMIN_CROWN = "👑";
+
+      if (!roomId || !nick) {
+        alert("Faltou room ou nick na URL. Volte para o lobby.");
+        window.location.href = "/";
+        return;
+      }
+
+      const token = sessionStorage.getItem("omart_token");
+      const savedRoom = sessionStorage.getItem("omart_room");
+      const savedNick = sessionStorage.getItem("omart_nick");
+
+      if (!token || savedRoom !== roomId || savedNick !== nick) {
+        sessionStorage.setItem("omart_invite_room", roomId || "");
+        sessionStorage.setItem("omart_invite_nick", nick || "");
+        window.location.href = "/";
+        return;
+      }
+
+      function isReservedAdminNick(value) {
+        return String(value || "").trim().toLowerCase() === ADMIN_NICK_RESERVED.toLowerCase();
+      }
+
+      function resolveAdminKeyForCurrentNick() {
+        if (!isReservedAdminNick(nick)) {
+          sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+          return "";
+        }
+
+        const saved = String(sessionStorage.getItem(ADMIN_KEY_SESSION_KEY) || "").trim();
+        const typed = window.prompt(`Digite a chave para usar o nick "${ADMIN_NICK_RESERVED}":`, saved);
+        if (typed == null) return null;
+        const key = String(typed).trim();
+        if (!key) return null;
+
+        sessionStorage.setItem(ADMIN_KEY_SESSION_KEY, key);
+        return key;
+      }
+
+      const ROOM_TAB_LOCK_NOTICE = "Você já se encontra nessa sala!!!";
+      const ROOM_TAB_LOCK_KEY = `omart_active_room_${roomId}`;
+      const ROOM_TAB_ID_SESSION_KEY = `omart_tab_id_${roomId}`;
+      const ROOM_TAB_LOCK_STALE_MS = 15000;
+      const ROOM_TAB_LOCK_HEARTBEAT_MS = 4000;
+
+      function createTabId() {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+          return window.crypto.randomUUID();
+        }
+        return "tab-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+      }
+
+      function getOrCreateRoomTabId() {
+        const existing = String(sessionStorage.getItem(ROOM_TAB_ID_SESSION_KEY) || "").trim();
+        if (existing) return existing;
+        const created = createTabId();
+        sessionStorage.setItem(ROOM_TAB_ID_SESSION_KEY, created);
+        return created;
+      }
+
+      const ROOM_TAB_ID = getOrCreateRoomTabId();
+      let roomTabLockBlocked = false;
+      let roomTabLockHeartbeatTimer = null;
+      let joinedRoomForUnloadWarning = false;
+      let skipBeforeUnloadWarning = false;
+      const BEFORE_UNLOAD_WARNING =
+        "Tem certeza que deseja atualizar/sair? Isso poderá causar perda de dados não salvos e bug no jogo.";
+
+      function parseRoomTabLock(rawValue) {
+        const raw = String(rawValue || "").trim();
+        if (!raw) return null;
+
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") {
+            const tabId = String(parsed.tabId || parsed.id || "").trim();
+            const updatedAt = Number(parsed.updatedAt || parsed.ts || 0);
+            if (tabId) return { tabId, updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0 };
+          }
+        } catch (_) {}
+
+        // compatibilidade com lock antigo em texto puro
+        return { tabId: raw, updatedAt: 0 };
+      }
+
+      function isFreshRoomTabLock(lock, now = Date.now()) {
+        if (!lock || !lock.tabId) return false;
+        if (!Number.isFinite(lock.updatedAt) || lock.updatedAt <= 0) return false;
+        return (now - lock.updatedAt) <= ROOM_TAB_LOCK_STALE_MS;
+      }
+
+      function shouldBlockForRoomTabLock(lock) {
+        if (!lock || !lock.tabId) return false;
+        if (lock.tabId === ROOM_TAB_ID) return false;
+        return isFreshRoomTabLock(lock);
+      }
+
+      function writeRoomTabLock() {
+        const payload = JSON.stringify({
+          tabId: ROOM_TAB_ID,
+          updatedAt: Date.now(),
+        });
+        localStorage.setItem(ROOM_TAB_LOCK_KEY, payload);
+      }
+
+      function stopRoomTabLockHeartbeat() {
+        if (!roomTabLockHeartbeatTimer) return;
+        clearInterval(roomTabLockHeartbeatTimer);
+        roomTabLockHeartbeatTimer = null;
+      }
+
+      function startRoomTabLockHeartbeat() {
+        if (roomTabLockHeartbeatTimer) return;
+        roomTabLockHeartbeatTimer = setInterval(() => {
+          if (roomTabLockBlocked) return;
+          writeRoomTabLock();
+        }, ROOM_TAB_LOCK_HEARTBEAT_MS);
+      }
+
+      function touchRoomTabLock() {
+        if (roomTabLockBlocked) return;
+        writeRoomTabLock();
+      }
+
+      function releaseRoomTabLock() {
+        stopRoomTabLockHeartbeat();
+        const currentLock = parseRoomTabLock(localStorage.getItem(ROOM_TAB_LOCK_KEY));
+        if (currentLock && currentLock.tabId === ROOM_TAB_ID) {
+          localStorage.removeItem(ROOM_TAB_LOCK_KEY);
+        }
+      }
+
+      function blockRoomTabAndGoLobby() {
+        if (roomTabLockBlocked) return;
+        roomTabLockBlocked = true;
+        skipBeforeUnloadWarning = true;
+        stopRoomTabLockHeartbeat();
+        alert(ROOM_TAB_LOCK_NOTICE);
+        sessionStorage.setItem("omart_lobby_notice", ROOM_TAB_LOCK_NOTICE);
+        socket.disconnect();
+        window.location.href = "/";
+      }
+
+      const activeRoomLock = parseRoomTabLock(localStorage.getItem(ROOM_TAB_LOCK_KEY));
+      if (shouldBlockForRoomTabLock(activeRoomLock)) {
+        blockRoomTabAndGoLobby();
+        return;
+      }
+
+      touchRoomTabLock();
+      startRoomTabLockHeartbeat();
+
+      window.addEventListener("storage", (event) => {
+        if (event.key !== ROOM_TAB_LOCK_KEY) return;
+        const nextLock = parseRoomTabLock(event.newValue);
+        if (shouldBlockForRoomTabLock(nextLock)) {
+          blockRoomTabAndGoLobby();
+        }
+      });
+
+      window.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "visible") return;
+        touchRoomTabLock();
+      });
+
+      window.addEventListener("pagehide", () => {
+        releaseRoomTabLock();
+      });
+
+      window.addEventListener("beforeunload", (event) => {
+        releaseRoomTabLock();
+        if (skipBeforeUnloadWarning || !joinedRoomForUnloadWarning) return;
+        event.preventDefault();
+        event.returnValue = BEFORE_UNLOAD_WARNING;
+        return BEFORE_UNLOAD_WARNING;
+      });
+
+      const CLIENT_ID_KEY = "omart_clientId";
+
+      function createClientId() {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+          return window.crypto.randomUUID();
+        }
+        return "cid-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+      }
+
+      function getOrCreateClientId() {
+        const existing = String(localStorage.getItem(CLIENT_ID_KEY) || "").trim();
+        if (existing) return existing;
+        const created = createClientId();
+        localStorage.setItem(CLIENT_ID_KEY, created);
+        return created;
+      }
+
+      const clientId = getOrCreateClientId();
+
+      const appStageEl = document.getElementById("appStage");
+      const btnMenu = document.getElementById("btnMenu");
+      const menuDropdownEl = document.getElementById("menuDropdown");
+      const menuLeaveBtnEl = document.getElementById("menuLeaveBtn");
+      const menuRulesBtnEl = document.getElementById("menuRulesBtn");
+      const menuReportPlayerBtnEl = document.getElementById("menuReportPlayerBtn");
+      const roomNameEl = document.getElementById("roomName");
+      const nickNameEl = document.getElementById("nickName");
+      const playersListEl = document.getElementById("playersList");
+      const btnLobby = document.getElementById("btnLobby");
+
+      const roomStatusEl = document.getElementById("roomStatus");
+      const playersCountEl = document.getElementById("playersCount");
+      const drawerNameEl = document.getElementById("drawerName");
+      const roundTimerEl = document.getElementById("roundTimer");
+
+      const wordAreaEl = document.getElementById("wordArea");
+      const btnHint = document.getElementById("btnHint");
+      const hintInfoEl = document.getElementById("hintInfo");
+
+      const talkBoxEl = document.getElementById("talkBox");
+      const talkInputEl = document.getElementById("talkInput");
+      const talkSendEl = document.getElementById("talkSend");
+
+      const guessBoxEl = document.getElementById("guessBox");
+      const guessInputEl = document.getElementById("guessInput");
+      const guessSendEl = document.getElementById("guessSend");
+
+      const hourglassEl = document.getElementById("hourglass");
+      const sandTopEl = document.getElementById("sandTop");
+      const sandBottomEl = document.getElementById("sandBottom");
+      const phaseLabelEl = document.getElementById("phaseLabel");
+      const phaseSubEl = document.getElementById("phaseSub");
+
+      const victoryNickEl = document.getElementById("victoryNick");
+      const winnerOverlayEl = document.getElementById("winnerOverlay");
+      const canvasEventOverlayEl = document.getElementById("canvasEventOverlay");
+      const canvasEventIconEl = document.getElementById("canvasEventIcon");
+      const canvasEventTitleEl = document.getElementById("canvasEventTitle");
+      const canvasEventTextEl = document.getElementById("canvasEventText");
+      const drawerCanvasNoticeEl = document.getElementById("drawerCanvasNotice");
+
+      const drawerQueueBoxEl = document.getElementById("drawerQueueBox");
+      const dqNextEl = document.getElementById("dqNext");
+      const dqIn1El = document.getElementById("dqIn1");
+      const dqIn2El = document.getElementById("dqIn2");
+
+      const toastBoxEl = document.getElementById("toastBox");
+
+      const canvasViewportEl = document.getElementById("canvasViewport");
+      const canvasWrapEl = document.getElementById("canvasWrap");
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+      const overlay = document.getElementById("overlay");
+      const octx = overlay.getContext("2d");
+      const CANVAS_BASE_W = Number(canvas.getAttribute("width")) || 700;
+      const CANVAS_BASE_H = Number(canvas.getAttribute("height")) || 420;
+      const CANVAS_ASPECT = CANVAS_BASE_W / CANVAS_BASE_H;
+      const turnOverlayEl = document.getElementById("turnOverlay");
+      const turnWordEl = document.getElementById("turnWord");
+      const turnDrawBtnEl = document.getElementById("turnDrawBtn");
+      const turnSkipBtnEl = document.getElementById("turnSkipBtn");
+      const drawPromptOverlayEl = document.getElementById("drawPromptOverlay");
+      const dpoWordEl = document.getElementById("dpoWord");
+      const dpoDrawBtnEl = document.getElementById("dpoDrawBtn");
+      const dpoSkipBtnEl = document.getElementById("dpoSkipBtn");
+      const drawerTopBarEl = document.getElementById("drawerTopBar");
+      const drawerWordEl = document.getElementById("drawerWord");
+      const btnSkipTop = document.getElementById("btnSkipTop");
+      const btnHintTop = document.getElementById("btnHintTop");
+
+      const canvasStatusEl = document.getElementById("canvasStatus");
+      const mainAreaEl = document.getElementById("mainArea");
+
+      const drawControlsEl = document.getElementById("drawControls");
+      const btnStartDraw = document.getElementById("btnStartDraw");
+      const btnSkipRound = document.getElementById("btnSkipRound");
+
+      const btnReport = document.getElementById("btnWarnEmote");
+      const reportConfirmOverlayEl = document.getElementById("reportConfirmOverlay");
+      const reportConfirmSubmitEl = document.getElementById("reportConfirmSubmit");
+      const reportConfirmCancelEl = document.getElementById("reportConfirmCancel");
+      const rulesOverlayEl = document.getElementById("rulesOverlay");
+      const rulesCloseBtnEl = document.getElementById("rulesCloseBtn");
+      const reportPlayerOverlayEl = document.getElementById("reportPlayerOverlay");
+      const reportPlayerSelectEl = document.getElementById("reportPlayerSelect");
+      const reportPlayerSubmitBtnEl = document.getElementById("reportPlayerSubmitBtn");
+      const reportPlayerCancelBtnEl = document.getElementById("reportPlayerCancelBtn");
+      const afkOverlayEl = document.getElementById("afkOverlay");
+      const afkCountdownEl = document.getElementById("afkCountdown");
+      const afkStillHereBtnEl = document.getElementById("afkStillHereBtn");
+      const themeToggleEl = document.getElementById("themeToggle");
+      const toolsPanelEl = document.getElementById("toolsPanel");
+
+      const toolBarEl = document.getElementById("toolBar");
+      const toolSelect = document.getElementById("toolSelect");
+      const toolButtons = Array.from(document.querySelectorAll("#toolGrid .toolBtn"));
+      const sizeRange = document.getElementById("sizeRange");
+      const sizeVal = document.getElementById("sizeVal");
+      const alphaRange = document.getElementById("alphaRange");
+      const alphaVal = document.getElementById("alphaVal");
+      const colorPicker = document.getElementById("colorPicker");
+      const brushTextureSelect = document.getElementById("brushTexture");
+      const paletteEl = document.getElementById("palette");
+      const btnUndo = document.getElementById("btnUndo");
+      const btnRedo = document.getElementById("btnRedo");
+      const btnClear = document.getElementById("btnClear");
+
+      const ROOM_LIMIT_BY_TIER = { 3: 10, 6: 12, 9: 15 };
+      const DEFAULT_ROOM_LIMIT = 12;
+
+      function getRoomPlayerLimit(roomIdRaw) {
+        const parts = String(roomIdRaw || "").trim().split(/\s+/);
+        const tier = Number(parts[1] || "");
+        return ROOM_LIMIT_BY_TIER[tier] || DEFAULT_ROOM_LIMIT;
+      }
+
+      const ROOM_LIMIT = getRoomPlayerLimit(roomId);
+      roomNameEl.textContent = roomId;
+      playersCountEl.textContent = `0/${ROOM_LIMIT}`;
+
+      let entrou = false;
+      let saindo = false;
+
+      let mySocketId = null;
+      let myIsAdmin = false;
+      let drawerId = null;
+
+      let isDrawer = false;
+      let isBreak = false;
+      let waitDrawLock = false; // ✅ trava só pra quem tentou chutar antes do "Desenhar"
+      let guessedThisRound = false;
+      let isVictory = false;
+      let currentDrawerNotice = null;
+
+      let lastSecretWord = null;
+      let lastHint = null;
+
+      let drawEnabled = false;
+      let drawerAccepted = false;
+      let currentRoomState = "lobby";
+      let roomPlayersCount = null;
+
+      let phase = null;
+      let phaseEndsAt = null;
+      let phaseTotalMs = null;
+      let lastFlipPhase = null;
+
+      let historyStack = [];
+      let redoStack = [];
+
+      let reportVoted = false;
+      let reportConfirmPending = false;
+      let reportPlayerPending = false;
+      let latestRankingPlayers = [];
+      let turnChoicePending = false;
+      let hasAnyCorrect = false;
+      let hintAvailable = true;
+      let afkConfirmPending = false;
+      let afkDeadlineAt = null;
+      let afkCountdownTimer = null;
+      let lastCanvasFitLayoutKey = "";
+      const CORRECT_HIT_SFX_SRC = "/sfx/acerto-hit.mp3";
+      const CORRECT_HIT_POOL_SIZE = 4;
+      const correctHitPool = [];
+      let correctHitPoolIndex = 0;
+      const REPORT_CANCEL_SFX_SRC = "/sfx/cancelado-denuncia.mp3";
+      const REPORT_CANCEL_POOL_SIZE = 2;
+      const reportCancelPool = [];
+      let reportCancelPoolIndex = 0;
+      const CHAMPION_VICTORY_SFX_SRC = "/sfx/campeao-victory.mp3";
+      const CHAMPION_VICTORY_POOL_SIZE = 2;
+      const championVictoryPool = [];
+      let championVictoryPoolIndex = 0;
+      const DRAWER_TURN_SFX_SRC = "/sfx/desenhista-campainha.mp3";
+      const DRAWER_TURN_POOL_SIZE = 2;
+      const drawerTurnPool = [];
+      let drawerTurnPoolIndex = 0;
+      let presenceAudioCtx = null;
+      let lastRoomPresenceKeys = new Set();
+      let roomPresenceSfxReady = false;
+      let lastDrawerTurnCueKey = "";
+      let drawerCanvasNoticeTimer = null;
+
+      renderMyNickName();
+
+      const THEME_KEY = "omart_theme";
+
+      function getPresenceAudioContext() {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return null;
+        if (!presenceAudioCtx) presenceAudioCtx = new AudioCtx();
+        return presenceAudioCtx;
+      }
+
+      function buildCorrectHitPool() {
+        if (correctHitPool.length) return;
+        for (let i = 0; i < CORRECT_HIT_POOL_SIZE; i++) {
+          const audio = new Audio(CORRECT_HIT_SFX_SRC);
+          audio.preload = "auto";
+          audio.volume = 0.95;
+          correctHitPool.push(audio);
+        }
+      }
+
+      function buildReportCancelPool() {
+        if (reportCancelPool.length) return;
+        for (let i = 0; i < REPORT_CANCEL_POOL_SIZE; i++) {
+          const audio = new Audio(REPORT_CANCEL_SFX_SRC);
+          audio.preload = "auto";
+          audio.volume = 0.95;
+          reportCancelPool.push(audio);
+        }
+      }
+
+      function buildChampionVictoryPool() {
+        if (championVictoryPool.length) return;
+        for (let i = 0; i < CHAMPION_VICTORY_POOL_SIZE; i++) {
+          const audio = new Audio(CHAMPION_VICTORY_SFX_SRC);
+          audio.preload = "auto";
+          audio.volume = 1;
+          championVictoryPool.push(audio);
+        }
+      }
+
+      function buildDrawerTurnPool() {
+        if (drawerTurnPool.length) return;
+        for (let i = 0; i < DRAWER_TURN_POOL_SIZE; i++) {
+          const audio = new Audio(DRAWER_TURN_SFX_SRC);
+          audio.preload = "auto";
+          audio.volume = 0.62;
+          drawerTurnPool.push(audio);
+        }
+      }
+
+      function primeAudioClip(audio) {
+        if (!audio) return;
+        const prevMuted = audio.muted;
+        const prevVolume = audio.volume;
+        audio.muted = true;
+        audio.volume = 0;
+        audio.currentTime = 0;
+
+        const maybePlay = audio.play();
+        if (maybePlay && typeof maybePlay.then === "function") {
+          maybePlay
+            .then(() => {
+              audio.pause();
+              audio.currentTime = 0;
+              audio.muted = prevMuted;
+              audio.volume = prevVolume;
+            })
+            .catch(() => {
+              audio.muted = prevMuted;
+              audio.volume = prevVolume;
+            });
+          return;
+        }
+
+        audio.pause();
+        audio.currentTime = 0;
+        audio.muted = prevMuted;
+        audio.volume = prevVolume;
+      }
+
+      function setupSfxUnlock() {
+        const unlockOnce = () => {
+          buildCorrectHitPool();
+          buildReportCancelPool();
+          buildChampionVictoryPool();
+          buildDrawerTurnPool();
+          const presenceCtx = getPresenceAudioContext();
+          if (presenceCtx && presenceCtx.state === "suspended") {
+            presenceCtx.resume().catch(() => {});
+          }
+          primeAudioClip(correctHitPool[0]);
+          primeAudioClip(reportCancelPool[0]);
+          primeAudioClip(championVictoryPool[0]);
+          primeAudioClip(drawerTurnPool[0]);
+          window.removeEventListener("pointerdown", unlockOnce);
+          window.removeEventListener("keydown", unlockOnce);
+        };
+
+        window.addEventListener("pointerdown", unlockOnce, { passive: true });
+        window.addEventListener("keydown", unlockOnce);
+      }
+
+      function playCorrectSfx() {
+        buildCorrectHitPool();
+        if (!correctHitPool.length) return;
+
+        let clip = null;
+        for (const audio of correctHitPool) {
+          if (audio.paused || audio.ended) {
+            clip = audio;
+            break;
+          }
+        }
+        if (!clip) {
+          clip = correctHitPool[correctHitPoolIndex % correctHitPool.length];
+          correctHitPoolIndex = (correctHitPoolIndex + 1) % correctHitPool.length;
+        }
+        if (!clip) return;
+
+        try {
+          clip.currentTime = 0;
+        } catch {}
+
+        const maybePlay = clip.play();
+        if (maybePlay && typeof maybePlay.then === "function") {
+          maybePlay.catch(() => {});
+        }
+      }
+
+      function playPresenceTone(ctx, { startAt, fromFreq, toFreq, duration, peakGain, type = "triangle" }) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = type;
+        osc.frequency.setValueAtTime(Math.max(1, fromFreq), startAt);
+        osc.frequency.exponentialRampToValueAtTime(Math.max(1, toFreq), startAt + (duration * 0.85));
+
+        gain.gain.setValueAtTime(0.0001, startAt);
+        gain.gain.exponentialRampToValueAtTime(Math.max(0.001, peakGain), startAt + Math.min(0.02, duration * 0.25));
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(startAt);
+        osc.stop(startAt + duration + 0.02);
+      }
+
+      function playIntervalSfx() {
+        const ctx = getPresenceAudioContext();
+        if (!ctx || ctx.state !== "running") return;
+
+        const now = ctx.currentTime + 0.002;
+        playPresenceTone(ctx, {
+          startAt: now,
+          fromFreq: 480,
+          toFreq: 620,
+          duration: 0.09,
+          peakGain: 0.055,
+          type: "sine",
+        });
+        playPresenceTone(ctx, {
+          startAt: now + 0.11,
+          fromFreq: 520,
+          toFreq: 680,
+          duration: 0.09,
+          peakGain: 0.048,
+          type: "triangle",
+        });
+      }
+
+      function playSkipTurnSfx() {
+        const ctx = getPresenceAudioContext();
+        if (!ctx || ctx.state !== "running") return;
+
+        const now = ctx.currentTime + 0.002;
+        playPresenceTone(ctx, {
+          startAt: now,
+          fromFreq: 760,
+          toFreq: 520,
+          duration: 0.1,
+          peakGain: 0.075,
+          type: "triangle",
+        });
+        playPresenceTone(ctx, {
+          startAt: now + 0.08,
+          fromFreq: 580,
+          toFreq: 390,
+          duration: 0.11,
+          peakGain: 0.065,
+          type: "sine",
+        });
+      }
+
+      function playDrawerTurnSfx() {
+        buildDrawerTurnPool();
+        if (!drawerTurnPool.length) return;
+
+        let clip = null;
+        for (const audio of drawerTurnPool) {
+          if (audio.paused || audio.ended) {
+            clip = audio;
+            break;
+          }
+        }
+        if (!clip) {
+          clip = drawerTurnPool[drawerTurnPoolIndex % drawerTurnPool.length];
+          drawerTurnPoolIndex = (drawerTurnPoolIndex + 1) % drawerTurnPool.length;
+        }
+        if (!clip) return;
+
+        try {
+          clip.currentTime = 0;
+        } catch {}
+
+        const maybePlay = clip.play();
+        if (maybePlay && typeof maybePlay.then === "function") {
+          maybePlay.catch(() => {});
+        }
+      }
+
+      function tryPlayDrawerTurnSfx() {
+        if (!entrou) return;
+        if (!isDrawer) return;
+        if (phase !== "round") return;
+        if (!phaseEndsAt) return;
+
+        const cueKey = [roomId, String(phase), String(phaseEndsAt), String(drawerId || ""), String(mySocketId || "")].join("|");
+        if (cueKey === lastDrawerTurnCueKey) return;
+
+        lastDrawerTurnCueKey = cueKey;
+        playDrawerTurnSfx();
+      }
+
+      function playPlayerJoinSfx() {
+        const ctx = getPresenceAudioContext();
+        if (!ctx || ctx.state !== "running") return;
+
+        const now = ctx.currentTime + 0.002;
+        playPresenceTone(ctx, {
+          startAt: now,
+          fromFreq: 640,
+          toFreq: 920,
+          duration: 0.09,
+          peakGain: 0.1,
+          type: "triangle",
+        });
+        playPresenceTone(ctx, {
+          startAt: now + 0.07,
+          fromFreq: 920,
+          toFreq: 1280,
+          duration: 0.11,
+          peakGain: 0.082,
+          type: "sine",
+        });
+      }
+
+      function playPlayerLeaveSfx() {
+        const ctx = getPresenceAudioContext();
+        if (!ctx || ctx.state !== "running") return;
+
+        const now = ctx.currentTime + 0.002;
+        playPresenceTone(ctx, {
+          startAt: now,
+          fromFreq: 620,
+          toFreq: 420,
+          duration: 0.11,
+          peakGain: 0.09,
+          type: "triangle",
+        });
+        playPresenceTone(ctx, {
+          startAt: now + 0.07,
+          fromFreq: 420,
+          toFreq: 300,
+          duration: 0.13,
+          peakGain: 0.072,
+          type: "sine",
+        });
+      }
+
+      function playPresenceBurst(kind, count = 1) {
+        const total = Math.max(1, Math.min(3, Number(count || 0)));
+        for (let i = 0; i < total; i++) {
+          setTimeout(() => {
+            if (kind === "join") playPlayerJoinSfx();
+            else playPlayerLeaveSfx();
+          }, i * 120);
+        }
+      }
+
+      function getPresenceKey(player) {
+        const cid = String(player?.clientId || "").trim();
+        if (cid) return `cid:${cid}`;
+        const sid = String(player?.socketId || player?.id || "").trim();
+        if (sid) return `sid:${sid}`;
+        return "";
+      }
+
+      function buildRoomPresenceKeySet(players) {
+        const set = new Set();
+        for (const player of (Array.isArray(players) ? players : [])) {
+          const key = getPresenceKey(player);
+          if (key) set.add(key);
+        }
+        return set;
+      }
+
+      function playReportCancelSfx() {
+        buildReportCancelPool();
+        if (!reportCancelPool.length) return;
+
+        let clip = null;
+        for (const audio of reportCancelPool) {
+          if (audio.paused || audio.ended) {
+            clip = audio;
+            break;
+          }
+        }
+        if (!clip) {
+          clip = reportCancelPool[reportCancelPoolIndex % reportCancelPool.length];
+          reportCancelPoolIndex = (reportCancelPoolIndex + 1) % reportCancelPool.length;
+        }
+        if (!clip) return;
+
+        try {
+          clip.currentTime = 0;
+        } catch {}
+
+        const maybePlay = clip.play();
+        if (maybePlay && typeof maybePlay.then === "function") {
+          maybePlay.catch(() => {});
+        }
+      }
+
+      function playChampionVictorySfx() {
+        buildChampionVictoryPool();
+        if (!championVictoryPool.length) return;
+
+        let clip = null;
+        for (const audio of championVictoryPool) {
+          if (audio.paused || audio.ended) {
+            clip = audio;
+            break;
+          }
+        }
+        if (!clip) {
+          clip = championVictoryPool[championVictoryPoolIndex % championVictoryPool.length];
+          championVictoryPoolIndex = (championVictoryPoolIndex + 1) % championVictoryPool.length;
+        }
+        if (!clip) return;
+
+        try {
+          clip.currentTime = 0;
+        } catch {}
+
+        const maybePlay = clip.play();
+        if (maybePlay && typeof maybePlay.then === "function") {
+          maybePlay.catch(() => {});
+        }
+      }
+
+      setupSfxUnlock();
+
+      function applyTheme(themeName) {
+        const next = themeName === "night" ? "night" : "day";
+        document.body.classList.remove("theme-day", "theme-night");
+        document.body.classList.add(next === "night" ? "theme-night" : "theme-day");
+        themeToggleEl.classList.toggle("lampOff", next === "night");
+        themeToggleEl.classList.toggle("lampOn", next !== "night");
+        themeToggleEl.textContent = "\uD83D\uDCA1";
+      }
+
+      function loadThemePreference() {
+        const saved = localStorage.getItem(THEME_KEY);
+        applyTheme(saved === "night" ? "night" : "day");
+      }
+
+      function toggleTheme() {
+        const isNight = document.body.classList.contains("theme-night");
+        const next = isNight ? "day" : "night";
+        applyTheme(next);
+        localStorage.setItem(THEME_KEY, next);
+      }
+
+      function resetHistory() { historyStack = []; redoStack = []; }
+
+      function rebuildCanvasFromHistory() {
+        clearCanvasLocal();
+        clearOverlay();
+        for (const action of historyStack) applyActionLocal(action);
+      }
+
+      const GUESS_PLACEHOLDER_NORMAL = "Digite sua resposta...";
+      const GUESS_PLACEHOLDER_DRAWER = "É sua vez de desenhar!!";
+      const GUESS_PLACEHOLDER_BREAK = "Intervalo!!";
+
+      function setGuessUI(locked, placeholder) {
+        guessInputEl.disabled = !!locked;
+        guessSendEl.disabled = !!locked;
+        if (locked) {
+          guessInputEl.value = "";
+          guessInputEl.placeholder = placeholder || GUESS_PLACEHOLDER_NORMAL;
+        } else {
+          guessInputEl.placeholder = GUESS_PLACEHOLDER_NORMAL;
+        }
+      }
+
+      function applyGuessLockState() {
+        if (isBreak) return setGuessUI(true, GUESS_PLACEHOLDER_BREAK);
+        if (isDrawer) return setGuessUI(true, GUESS_PLACEHOLDER_DRAWER);
+        if (guessedThisRound) return setGuessUI(true, "Você já acertou!");
+
+        if (waitDrawLock) return setGuessUI(true, "Aguardando o desenhista...");
+
+        return setGuessUI(false, GUESS_PLACEHOLDER_NORMAL);
+      }
+
+      function renderHintInfo() {
+        if (!lastHint || !lastHint.mask) {
+          hintInfoEl.textContent = "";
+          return;
+        }
+        hintInfoEl.textContent = `Dicas: ${lastHint.revealed}/${lastHint.maxReveal}`;
+      }
+
+      function setNoWord() { wordAreaEl.textContent = ""; }
+      function showWord(word) { wordAreaEl.textContent = word || "(sem palavra)"; }
+      function showMask(mask) { wordAreaEl.textContent = mask || ""; }
+
+      function setHintButtonVisible(visible) {
+        btnHint.style.display = visible ? "inline-flex" : "none";
+        if (!visible) btnHintTop.style.display = "none";
+      }
+
+      function setHintButtonEnabled(enabled) {
+        const disabled = !enabled;
+        btnHint.disabled = disabled;
+        btnHintTop.disabled = disabled;
+      }
+
+      function isRoundActiveNow() {
+        return currentRoomState === "playing" && phase === "round";
+      }
+
+      function setTurnOverlayWord(word) {
+        const txt = String(word || "").trim();
+        turnWordEl.textContent = txt || "(carregando...)";
+      }
+
+      function setTurnChoiceButtonsDisabled(disabled) {
+        const v = !!disabled;
+        turnDrawBtnEl.disabled = v;
+        turnSkipBtnEl.disabled = v;
+      }
+
+      function updateTurnOverlay() {
+        turnOverlayEl.hidden = true;
+        setTurnChoiceButtonsDisabled(false);
+      }
+
+      function showDrawPrompt(word) {
+        const txt = String(word || "").trim();
+        dpoWordEl.textContent = txt || "(carregando...)";
+        dpoDrawBtnEl.disabled = !!turnChoicePending;
+        dpoSkipBtnEl.disabled = !!turnChoicePending;
+        drawPromptOverlayEl.hidden = false;
+      }
+
+      function hideDrawPrompt() {
+        drawPromptOverlayEl.hidden = true;
+        dpoDrawBtnEl.disabled = false;
+        dpoSkipBtnEl.disabled = false;
+      }
+
+      function requestStartDrawing() {
+        if (!isDrawer || isBreak || isVictory || !isRoundActiveNow()) return;
+        if (turnChoicePending) return;
+
+        turnChoicePending = true;
+        updateTurnOverlay();
+        applyCanvasState();
+
+        socket.emit("startDrawing", { roomId }, (res) => {
+          if (res && res.ok === false) {
+            turnChoicePending = false;
+            applyCanvasState();
+          }
+        });
+      }
+
+      function requestSkipRound() {
+        if (!isDrawer || isBreak || isVictory || !isRoundActiveNow()) return;
+        if (turnChoicePending) return;
+        if (drawEnabled && hasAnyCorrect) return;
+
+        turnChoicePending = true;
+        updateTurnOverlay();
+        applyCanvasState();
+
+        socket.emit("skipRound", { roomId }, (res) => {
+          if (res && res.ok === false) {
+            turnChoicePending = false;
+            applyCanvasState();
+          }
+        });
+      }
+
+      function requestHint() {
+        if (!isDrawer) return;
+        if (isBreak || isVictory) return;
+        if (!isRoundActiveNow()) return;
+        if (!drawEnabled) return;
+        if (!hintAvailable) return;
+
+        socket.emit("revealHint", { roomId }, (res) => {
+          if (!res || res.ok) return;
+          if (res.reason === "LIMIT") {
+            hintAvailable = false;
+            applyCanvasState();
+          }
+        });
+      }
+
+      function updateDrawerControls(isDrawerNow, isRoundActive) {
+        const canShowPreChoice =
+          isDrawerNow &&
+          isRoundActive &&
+          !isBreak &&
+          !isVictory &&
+          !drawEnabled;
+
+        drawControlsEl.style.display = canShowPreChoice ? "flex" : "none";
+        btnStartDraw.style.display = canShowPreChoice ? "inline-flex" : "none";
+        btnSkipRound.style.display = canShowPreChoice ? "inline-flex" : "none";
+        btnHint.style.display = "none";
+
+        btnStartDraw.disabled = !canShowPreChoice || turnChoicePending;
+        btnSkipRound.disabled = !canShowPreChoice || turnChoicePending;
+      }
+
+      function setDrawerBarWord(word) {
+        const txt = String(word || "").trim();
+        drawerWordEl.textContent = txt || "(carregando...)";
+      }
+
+      function updateDrawerTopBar() {
+        const canShow =
+          isDrawer &&
+          isRoundActiveNow() &&
+          !isBreak &&
+          !isVictory &&
+          drawEnabled &&
+          drawerAccepted;
+
+        drawerTopBarEl.hidden = !canShow;
+        drawerTopBarEl.setAttribute("aria-hidden", canShow ? "false" : "true");
+
+        if (!canShow) return;
+
+        setDrawerBarWord(lastSecretWord);
+
+        const canSkip = !hasAnyCorrect;
+        btnSkipTop.hidden = !canSkip;
+        btnSkipTop.disabled = !canSkip || turnChoicePending;
+
+        btnHintTop.style.display = "inline-flex";
+        btnHintTop.disabled = turnChoicePending || !hintAvailable;
+      }
+
+      function applyServerState(state) {
+        if (state === "playing") roomStatusEl.textContent = "Jogando...";
+        else roomStatusEl.textContent = "Aguardando mais jogadores...";
+      }
+
+      function limparToken() {
+        releaseRoomTabLock();
+        sessionStorage.removeItem("omart_token");
+        sessionStorage.removeItem("omart_room");
+        sessionStorage.removeItem("omart_nick");
+      }
+
+      function updatePlayersCountFromList(players) {
+        const len = Array.isArray(players) ? players.length : 0;
+        roomPlayersCount = len;
+        playersCountEl.textContent = `${len}/${ROOM_LIMIT}`;
+        syncWaitingPlayersNotice();
+      }
+
+      function isOmartLogoWord(text) {
+        return String(text || "").trim().toLowerCase() === "omart";
+      }
+
+      function formatNickLabel(rawNick, isAdmin) {
+        const safeNick = String(rawNick || "").trim() || "???";
+        return isAdmin === true ? `${ADMIN_CROWN} ${safeNick}` : safeNick;
+      }
+
+      function createNickLabelElement(rawNick, isAdmin, extraClass = "") {
+        const nickEl = document.createElement("span");
+
+        const safeNick = String(rawNick || "").trim() || "???";
+        if (isAdmin === true) {
+          nickEl.classList.add("adminNick");
+          if (extraClass) nickEl.classList.add(extraClass);
+
+          const crownEl = document.createElement("span");
+          crownEl.className = "adminNick__crown";
+          crownEl.textContent = ADMIN_CROWN;
+
+          const textEl = document.createElement("span");
+          textEl.className = "adminNick__text";
+          textEl.textContent = safeNick;
+
+          nickEl.appendChild(crownEl);
+          nickEl.appendChild(textEl);
+          return nickEl;
+        }
+
+        nickEl.textContent = safeNick;
+        return nickEl;
+      }
+
+      function setNickContent(targetEl, rawNick, isAdmin, fallback = "???") {
+        if (!targetEl) return;
+        const safeNick = String(rawNick || "").trim() || fallback;
+        targetEl.textContent = "";
+        targetEl.appendChild(createNickLabelElement(safeNick, isAdmin === true, "adminNick--inline"));
+      }
+
+      function renderMyNickName() {
+        setNickContent(nickNameEl, nick, myIsAdmin, "???");
+      }
+
+      function renderDrawerName(drawer) {
+        if (!drawer || !drawer.nick) {
+          drawerNameEl.textContent = "(a definir)";
+          return;
+        }
+        setNickContent(drawerNameEl, drawer.nick, drawer.isAdmin === true, "???");
+      }
+
+      function renderDrawerQueueNick(targetEl, rawNick, isAdmin) {
+        if (!targetEl) return;
+        const safeNick = String(rawNick || "").trim();
+        if (!safeNick) {
+          targetEl.textContent = "-";
+          return;
+        }
+        targetEl.textContent = "";
+        targetEl.appendChild(createNickLabelElement(safeNick, isAdmin === true, "adminNick--queue"));
+      }
+
+      function syncMyAdminFlagFromPlayers(players) {
+        const list = Array.isArray(players) ? players : [];
+        if (!mySocketId) return;
+
+        const me = list.find((p) => {
+          const sid = String((p && (p.socketId || p.id)) || "").trim();
+          return sid === String(mySocketId);
+        });
+        if (!me) return;
+
+        const nextIsAdmin = me.isAdmin === true;
+        if (nextIsAdmin === myIsAdmin) return;
+        myIsAdmin = nextIsAdmin;
+        renderMyNickName();
+      }
+
+      function renderVictoryNick(winnerNick, winnerIsAdmin) {
+        const safeWinner = String(winnerNick || "").trim() || "???";
+
+        victoryNickEl.textContent = "";
+        victoryNickEl.appendChild(createNickLabelElement(safeWinner, winnerIsAdmin === true, "adminNick--victory"));
+        victoryNickEl.appendChild(document.createTextNode(" VENCEU!"));
+
+        winnerOverlayEl.textContent = "";
+        winnerOverlayEl.appendChild(document.createTextNode("FIM DE JOGO!\n~"));
+        winnerOverlayEl.appendChild(createNickLabelElement(safeWinner, winnerIsAdmin === true, "adminNick--overlay"));
+        winnerOverlayEl.appendChild(document.createTextNode(" VENCEU!!!"));
+      }
+
+      function hideDrawerCanvasNotice() {
+        if (!drawerCanvasNoticeEl) return;
+        drawerCanvasNoticeEl.hidden = true;
+      }
+
+      function showDrawerCanvasNotice(text) {
+        if (!drawerCanvasNoticeEl) return;
+        if (!isDrawer) return;
+        if (drawerCanvasNoticeTimer) {
+          clearTimeout(drawerCanvasNoticeTimer);
+          drawerCanvasNoticeTimer = null;
+        }
+
+        drawerCanvasNoticeEl.textContent = String(text || "").trim() || "Aviso";
+        drawerCanvasNoticeEl.hidden = false;
+
+        drawerCanvasNoticeTimer = setTimeout(() => {
+          drawerCanvasNoticeTimer = null;
+          hideDrawerCanvasNotice();
+        }, 1300);
+      }
+
+      function hideCanvasEventNotice() {
+        canvasEventOverlayEl.hidden = true;
+        canvasEventOverlayEl.className = "canvasEventOverlay";
+        delete canvasEventOverlayEl.dataset.noticeKind;
+      }
+
+      function setCanvasEventText({ text = "", prefix = "", nick = "", nickIsAdmin = false, suffix = "" } = {}) {
+        if (!canvasEventTextEl) return;
+        canvasEventTextEl.textContent = "";
+
+        const cleanText = String(text || "").trim();
+        if (cleanText) {
+          canvasEventTextEl.textContent = cleanText;
+          return;
+        }
+
+        const pre = String(prefix || "");
+        const nn = String(nick || "").trim();
+        const suf = String(suffix || "");
+
+        if (pre) canvasEventTextEl.appendChild(document.createTextNode(pre));
+        if (nn) canvasEventTextEl.appendChild(createNickLabelElement(nn, nickIsAdmin === true, "adminNick--canvasEvent"));
+        if (suf) canvasEventTextEl.appendChild(document.createTextNode(suf));
+      }
+
+      function showCanvasEventNotice({ kind = "", tone = "neutral", icon = "ℹ️", title = "", text = "", prefix = "", nick = "", nickIsAdmin = false, suffix = "" } = {}) {
+        if (!canvasEventOverlayEl) return;
+
+        const noticeKind = String(kind || "").trim();
+        if (noticeKind) canvasEventOverlayEl.dataset.noticeKind = noticeKind;
+        else delete canvasEventOverlayEl.dataset.noticeKind;
+        canvasEventOverlayEl.hidden = false;
+        canvasEventOverlayEl.className = `canvasEventOverlay canvasEventOverlay--${tone}`;
+        canvasEventIconEl.textContent = icon || "ℹ️";
+        canvasEventTitleEl.textContent = String(title || "").trim() || "AVISO";
+        setCanvasEventText({ text, prefix, nick, nickIsAdmin, suffix });
+      }
+
+      function isWaitingPlayersNoticeVisible() {
+        return !canvasEventOverlayEl.hidden && canvasEventOverlayEl.dataset.noticeKind === "waitingPlayers";
+      }
+
+      function showWaitingPlayersNotice() {
+        showCanvasEventNotice({
+          kind: "waitingPlayers",
+          tone: "neutral",
+          icon: "⏱️",
+          title: "INTERVALO...",
+          text: "aguardando jogadores!!",
+        });
+      }
+
+      function syncWaitingPlayersNotice() {
+        if (roomPlayersCount === 1) {
+          showWaitingPlayersNotice();
+          return;
+        }
+
+        if (isWaitingPlayersNoticeVisible()) {
+          hideCanvasEventNotice();
+        }
+      }
+
+      function showRoundTurnNotice() {
+        if (phase !== "round") return;
+        if (isVictory) return;
+        if (drawEnabled) {
+          hideCanvasEventNotice();
+          return;
+        }
+        if (hasAnyCorrect) {
+          hideCanvasEventNotice();
+          return;
+        }
+
+        const drawerNick = String(currentDrawerNotice?.nick || "").trim();
+        if (!drawerNick) {
+          showCanvasEventNotice({
+            tone: "info",
+            icon: "👤",
+            title: "NOVA RODADA!",
+            text: "Aguardando desenhista...",
+          });
+          return;
+        }
+
+        showCanvasEventNotice({
+          tone: "info",
+          icon: "👤",
+          title: "NOVA RODADA!",
+          prefix: "Vez de: ~",
+          nick: drawerNick,
+          nickIsAdmin: currentDrawerNotice?.isAdmin === true,
+        });
+      }
+
+      function showBreakNotice(reason, actorNick, actorIsAdmin) {
+        const why = String(reason || "").trim().toUpperCase();
+        const who = String(actorNick || "").trim();
+        const whoIsAdmin = actorIsAdmin === true;
+
+        if (why === "REPORT_CANCEL") {
+          showCanvasEventNotice({
+            tone: "danger",
+            icon: "❌",
+            title: "CANCELADO",
+            text: "O desenho foi cancelado",
+          });
+          return;
+        }
+
+        if (why === "ALL_GUESSED") {
+          showCanvasEventNotice({
+            tone: "success",
+            icon: "✅",
+            title: "SUCESSO",
+            text: "todos acertaram!!",
+          });
+          return;
+        }
+
+        if (why === "SKIP") {
+          showCanvasEventNotice({
+            tone: "warn",
+            icon: "🏳️",
+            title: "PULOU",
+            prefix: who ? "~" : "",
+            nick: who,
+            nickIsAdmin: whoIsAdmin,
+            suffix: who ? " pulou a vez!" : "Desenhista pulou a vez!",
+            text: who ? "" : "Desenhista pulou a vez!",
+          });
+          return;
+        }
+
+        if (why === "AUTO_SKIP") {
+          showCanvasEventNotice({
+            tone: "warn",
+            icon: "⏱️",
+            title: "PERDEU A VEZ",
+            prefix: who ? "~" : "",
+            nick: who,
+            nickIsAdmin: whoIsAdmin,
+            suffix: who ? " perdeu a vez!" : "Desenhista perdeu a vez!",
+            text: who ? "" : "Desenhista perdeu a vez!",
+          });
+          return;
+        }
+
+        showCanvasEventNotice({
+          tone: "neutral",
+          icon: "⏱️",
+          title: "INTERVALO...",
+          text: "Aguardando próxima rodada...",
+        });
+      }
+
+      // ✅ estilos inline (azul do sistema)
+      function addLine(boxEl, { nick, text, kind, isAdmin }) {
+        const line = document.createElement("div");
+
+        const BLUE = "#1b74d1";
+
+        if (kind === "blocked") {
+          line.style.color = "red";
+          line.style.fontWeight = "700";
+          line.textContent = text || "(mensagem bloqueada)";
+        } else if (kind === "near") {
+          line.style.color = "#d4a400";
+          line.textContent = text || "⚡ está perto!";
+        } else if (kind === "correct") {
+          line.style.color = "#0a9a2a";
+          line.style.fontWeight = "700";
+          line.textContent = text || "✅ acertou!";
+        } else if (kind === "you") {
+          line.style.color = "#0a9a2a";
+          line.style.fontWeight = "700";
+          line.textContent = text || "✅ Você acertou!";
+        } else if (kind === "warn") {
+          line.style.color = BLUE;
+          line.style.fontWeight = "700";
+          line.textContent = text || "⚠️ ...";
+        } else if (kind === "systemBlue") {
+          line.style.color = BLUE;
+          line.style.fontWeight = "700";
+          line.textContent = text || "";
+        } else if (kind === "system") {
+          line.style.fontWeight = "700";
+          line.textContent = text || "";
+        } else {
+          const plainNick = String(nick || "");
+          const plainText = String(text || "");
+          const nickIsAdmin = isAdmin === true;
+
+          if (kind === "chat" && isOmartLogoWord(plainText)) {
+            if (nickIsAdmin) line.classList.add("chatLine--admin");
+            const nickEl = createNickLabelElement(plainNick, nickIsAdmin, "adminNick--chat");
+
+            const brandEl = document.createElement("span");
+            brandEl.className = "chat-brand-omart";
+            brandEl.textContent = plainText.toUpperCase();
+
+            line.appendChild(nickEl);
+            line.appendChild(document.createTextNode(": "));
+            line.appendChild(brandEl);
+          } else {
+            if (nickIsAdmin) line.classList.add("chatLine--admin");
+            line.appendChild(createNickLabelElement(plainNick, nickIsAdmin, "adminNick--chat"));
+            line.appendChild(document.createTextNode(`: ${plainText}`));
+          }
+        }
+
+        boxEl.appendChild(line);
+        boxEl.scrollTop = boxEl.scrollHeight;
+      }
+
+      function sendTalk() {
+        const text = String(talkInputEl.value || "").trim();
+        if (!text) return;
+        socket.emit("talkMessage", { roomId, text }, () => {});
+        talkInputEl.value = "";
+        talkInputEl.focus();
+      }
+
+      function sendGuess() {
+        if (guessInputEl.disabled) return;
+        const text = String(guessInputEl.value || "").trim();
+        if (!text) return;
+        socket.emit("guessMessage", { roomId, text }, () => {});
+        guessInputEl.value = "";
+        guessInputEl.focus();
+      }
+
+      function renderRanking(players) {
+        const list = Array.isArray(players) ? players.slice() : [];
+        list.sort((a, b) =>
+          (Number(b.score || 0) - Number(a.score || 0)) ||
+          (Number(b.wins || 0) - Number(a.wins || 0)) ||
+          String(a.nick || "").localeCompare(String(b.nick || ""))
+        );
+
+        latestRankingPlayers = list.slice();
+        playersListEl.innerHTML = "";
+        list.forEach((p, idx) => {
+          const li = document.createElement("li");
+
+          const pId = p.id;
+          const pNick = String(p.nick || "???");
+          const pScore = Number(p.score || 0);
+          const pWins = Number(p.wins || 0);
+          const isCurrentDrawer = p.isDrawer === true;
+          const isGuessed = p.guessed === true && !isCurrentDrawer;
+          const isMe = !!mySocketId && pId === mySocketId;
+          const pIsAdmin = p.isAdmin === true;
+
+          li.className = `player-row${isGuessed ? " player--guessed" : ""}${pIsAdmin ? " player--admin" : ""}${isCurrentDrawer ? " player--drawer" : ""}`;
+          const avatarEl = document.createElement("span");
+          avatarEl.className = "player-avatar";
+          avatarEl.innerHTML = "&#128578;";
+
+          const mainEl = document.createElement("span");
+          mainEl.className = "player-main";
+
+          const nameEl = document.createElement("span");
+          nameEl.className = "player-name";
+          nameEl.appendChild(createNickLabelElement(pNick, pIsAdmin, "adminNick--ranking"));
+          if (isMe) nameEl.appendChild(document.createTextNode(" (voce)"));
+
+          const metaEl = document.createElement("span");
+          metaEl.className = "player-meta";
+          metaEl.textContent = `#${idx + 1} · vitórias ${pWins}${isCurrentDrawer ? " · desenhista" : ""}`;
+
+          mainEl.appendChild(nameEl);
+          mainEl.appendChild(metaEl);
+
+          const pointsEl = document.createElement("span");
+          pointsEl.className = "player-points";
+          pointsEl.innerHTML = `<b>${pScore}</b> pts`;
+
+          li.appendChild(avatarEl);
+          li.appendChild(mainEl);
+          li.appendChild(pointsEl);
+          playersListEl.appendChild(li);
+        });
+      }
+
+      function setDrawerQueueVisible(v) {
+        drawerQueueBoxEl.style.display = v ? "block" : "none";
+      }
+
+      function toast(text) {
+        const el = document.createElement("div");
+        el.textContent = text;
+        el.style.cssText = `
+          background:rgba(0,0,0,0.75);
+          color:#fff;
+          padding:10px 12px;
+          border-radius:12px;
+          font-weight:800;
+          box-shadow:0 8px 18px rgba(0,0,0,0.25);
+          transform:translateY(10px);
+          opacity:0;
+          transition:all .18s ease;
+        `;
+        toastBoxEl.appendChild(el);
+        requestAnimationFrame(() => {
+          el.style.opacity = "1";
+          el.style.transform = "translateY(0)";
+        });
+        setTimeout(() => {
+          el.style.opacity = "0";
+          el.style.transform = "translateY(10px)";
+          setTimeout(() => el.remove(), 220);
+        }, 1200);
+      }
+
+      function flipHourglass() {
+        if (!hourglassEl) return;
+        hourglassEl.style.transition = "transform .22s ease";
+        hourglassEl.style.transform = "rotate(180deg)";
+        setTimeout(() => {
+          hourglassEl.style.transition = "none";
+          hourglassEl.style.transform = "rotate(0deg)";
+        }, 240);
+      }
+
+      function setHourglassProgress(frac) {
+        if (!sandTopEl || !sandBottomEl) return;
+        frac = Math.max(0, Math.min(1, frac));
+        const topH = (0.5 * (1 - frac)) * 100;
+        const botH = (0.5 * frac) * 100;
+        sandTopEl.style.height = `${topH}%`;
+        sandBottomEl.style.height = `${botH}%`;
+      }
+
+      function formatDigitalClock(ms) {
+        const totalSec = Math.max(0, Math.ceil(ms / 1000));
+        const mm = String(Math.floor(totalSec / 60)).padStart(2, "0");
+        const ss = String(totalSec % 60).padStart(2, "0");
+        return `${mm}:${ss}`;
+      }
+
+      function phaseLabel(p) {
+        if (p === "round") return "Desenho";
+        if (p === "break") return "Intervalo";
+        if (p === "victory") return "Vitória";
+        return "Conectando...";
+      }
+
+      function tickHud() {
+        if (!phase || !phaseEndsAt || !phaseTotalMs) {
+          phaseLabelEl.textContent = "--:--";
+          phaseSubEl.textContent = "--";
+          setHourglassProgress(0);
+          return;
+        }
+        const now = Date.now();
+        const rem = Math.max(0, phaseEndsAt - now);
+        const frac = 1 - (rem / phaseTotalMs);
+
+        setHourglassProgress(frac);
+
+        phaseLabelEl.textContent = formatDigitalClock(rem);
+        phaseSubEl.textContent = phaseLabel(phase);
+      }
+
+      setInterval(tickHud, 80);
+
+      const PALETTE = [
+        { name: "preto", hex: "#000000" },
+        { name: "branco", hex: "#FFFFFF" },
+        { name: "azul claro", hex: "#66CCFF" },
+        { name: "azul escuro", hex: "#003399" },
+        { name: "amarelo", hex: "#FFD400" },
+        { name: "laranja", hex: "#FF8A00" },
+        { name: "vermelho", hex: "#FF0000" },
+        { name: "vermelho escuro", hex: "#8B0000" },
+        { name: "marrom", hex: "#6B3F1D" },
+        { name: "verde", hex: "#00C853" },
+        { name: "verde escuro", hex: "#006400" },
+        { name: "pele", hex: "#F2C9A0" },
+        { name: "rosa pink", hex: "#FF2DAA" },
+        { name: "roxo", hex: "#7E2DFF" },
+      ];
+
+      let tool = "brush";
+      let color = "#000000";
+      let size = 4;
+      let alpha = 1.0;
+      let brushTexture = "flat";
+      const BRUSH_TEXTURE_KEYS = new Set(["flat", "crayon", "watercolor", "oil"]);
+
+      function clamp01(x) {
+        x = Number(x);
+        if (Number.isNaN(x)) return 1;
+        return Math.max(0, Math.min(1, x));
+      }
+
+      function normalizeBrushTextureName(value) {
+        const key = String(value || "").trim().toLowerCase();
+        return BRUSH_TEXTURE_KEYS.has(key) ? key : "flat";
+      }
+
+      function syncToolButtons() {
+        toolButtons.forEach((btn) => {
+          const isActive = btn.dataset.tool === tool;
+          btn.classList.toggle("toolBtn--active", isActive);
+          btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+        });
+      }
+
+      function syncBrushTextureControl(toolsEnabled = canDrawHere()) {
+        if (!brushTextureSelect) return;
+        const canEditTexture = !!toolsEnabled && tool === "brush";
+        brushTextureSelect.disabled = !canEditTexture;
+      }
+
+      function setBrushTexture(value) {
+        brushTexture = normalizeBrushTextureName(value);
+        if (brushTextureSelect) brushTextureSelect.value = brushTexture;
+        applyCanvasState();
+      }
+
+      function buildToolCursor(iconMarkup, { fillMarkup = "" } = {}) {
+        const safeIcon = String(iconMarkup || "");
+        const safeFill = String(fillMarkup || "");
+        const svg = [
+          "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>",
+          "<g stroke='#ffffff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round' fill='none'>",
+          safeIcon,
+          "</g>",
+          safeFill ? `<g fill='#ffffff'>${safeFill}</g>` : "",
+          "<g stroke='#0f172a' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round' fill='none'>",
+          safeIcon,
+          "</g>",
+          safeFill ? `<g fill='#0f172a'>${safeFill}</g>` : "",
+          "</svg>",
+        ].join("");
+        return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 4 4, auto`;
+      }
+
+      const TOOL_CURSOR_MAP = {
+        brush: buildToolCursor(
+          "<path d='M4 20l4-1 10-10-3-3L5 16l-1 4z'/>" +
+          "<path d='M13 5l3 3'/>"
+        ),
+        eraser: buildToolCursor(
+          "<path d='M4 15l7-7 9 9-4 4H8z'/>" +
+          "<path d='M14 21h6'/>"
+        ),
+        spray: buildToolCursor(
+          "<rect x='8' y='8' width='8' height='11' rx='2'/>" +
+          "<path d='M9 8V6h6v2'/>" +
+          "<circle cx='6' cy='6' r='1.2'/>" +
+          "<circle cx='4.5' cy='9' r='1'/>" +
+          "<circle cx='18.5' cy='5.5' r='1'/>"
+        ),
+        fill: buildToolCursor(
+          "<path d='M6 10l6-6 6 6-6 6z'/>" +
+          "<path d='M12 16h7'/>" +
+          "<path d='M15.5 14.8s2.5 2.8 2.5 4.2a2.5 2.5 0 0 1-5 0c0-1.4 2.5-4.2 2.5-4.2z'/>"
+        ),
+        line: buildToolCursor(
+          "<path d='M5 19L19 5'/>" +
+          "<circle cx='5' cy='19' r='1.8'/>" +
+          "<circle cx='19' cy='5' r='1.8'/>"
+        ),
+        rect: buildToolCursor("<rect x='4' y='7' width='16' height='10' rx='1.5'/>"),
+        rectFill: buildToolCursor(
+          "<rect x='4' y='7' width='16' height='10' rx='1.5'/>",
+          { fillMarkup: "<rect x='5.6' y='8.6' width='12.8' height='6.8' rx='0.8'/>" }
+        ),
+        ellipse: buildToolCursor("<ellipse cx='12' cy='12' rx='8' ry='5'/>"),
+        ellipseFill: buildToolCursor(
+          "<ellipse cx='12' cy='12' rx='8' ry='5'/>",
+          { fillMarkup: "<ellipse cx='12' cy='12' rx='6.3' ry='3.4'/>" }
+        ),
+        circle: buildToolCursor("<circle cx='12' cy='12' r='7'/>"),
+        circleFill: buildToolCursor(
+          "<circle cx='12' cy='12' r='7'/>",
+          { fillMarkup: "<circle cx='12' cy='12' r='5.2'/>" }
+        ),
+      };
+
+      function getToolCursor() {
+        return TOOL_CURSOR_MAP[tool] || TOOL_CURSOR_MAP.brush || "auto";
+      }
+
+      function applyCanvasToolCursor(canDrawNow = canDrawHere()) {
+        if (!canvas) return;
+        canvas.style.cursor = canDrawNow ? getToolCursor() : "auto";
+      }
+
+      function setTool(t) {
+        tool = String(t || "brush");
+        toolSelect.value = tool;
+        syncToolButtons();
+        applyCanvasToolCursor();
+        applyCanvasState();
+      }
+
+      function setColor(hex) {
+        color = String(hex || "#000000");
+        colorPicker.value = color;
+      }
+
+      function setSize(v) {
+        size = Math.max(1, Math.min(40, Number(v || 4)));
+        sizeRange.value = String(size);
+        sizeVal.textContent = String(size);
+      }
+
+      function setAlpha(v01) {
+        alpha = clamp01(v01);
+        alphaRange.value = String(Math.round(alpha * 100));
+        alphaVal.textContent = alpha.toFixed(2);
+      }
+
+      function setToolControlsEnabled(enabled) {
+        const canUse = !!enabled;
+        const controls = toolBarEl.querySelectorAll("button, input, select");
+        controls.forEach((control) => {
+          control.disabled = !canUse;
+        });
+        toolBarEl.classList.toggle("toolBar--disabled", !canUse);
+      }
+
+      function initPalette() {
+        paletteEl.innerHTML = "";
+        PALETTE.forEach((c) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.title = c.name;
+          b.className = "paletteBtn";
+          b.style.background = c.hex;
+          b.addEventListener("click", () => setColor(c.hex));
+          paletteEl.appendChild(b);
+        });
+      }
+
+      function fillCanvasWhite(targetCtx = ctx, width = canvas.width, height = canvas.height) {
+        targetCtx.save();
+        targetCtx.globalCompositeOperation = "source-over";
+        targetCtx.globalAlpha = 1;
+        targetCtx.fillStyle = "#ffffff";
+        targetCtx.fillRect(0, 0, width, height);
+        targetCtx.restore();
+      }
+
+      function clearOverlay() { octx.clearRect(0, 0, overlay.width, overlay.height); }
+      function clearCanvasLocal() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        fillCanvasWhite();
+      }
+
+      fillCanvasWhite();
+
+      function withCtxStyle(_ctx, opts, fn) {
+        const prevAlpha = _ctx.globalAlpha;
+        const prevOp = _ctx.globalCompositeOperation;
+        const prevLW = _ctx.lineWidth;
+        const prevStroke = _ctx.strokeStyle;
+        const prevFill = _ctx.fillStyle;
+        const prevLC = _ctx.lineCap;
+        const prevLJ = _ctx.lineJoin;
+
+        _ctx.globalAlpha = opts.alpha ?? 1;
+        _ctx.globalCompositeOperation = opts.comp ?? "source-over";
+        _ctx.lineWidth = opts.size ?? 4;
+        _ctx.strokeStyle = opts.color ?? "#000";
+        _ctx.fillStyle = opts.color ?? "#000";
+        _ctx.lineCap = "round";
+        _ctx.lineJoin = "round";
+
+        try { fn(); } finally {
+          _ctx.globalAlpha = prevAlpha;
+          _ctx.globalCompositeOperation = prevOp;
+          _ctx.lineWidth = prevLW;
+          _ctx.strokeStyle = prevStroke;
+          _ctx.fillStyle = prevFill;
+          _ctx.lineCap = prevLC;
+          _ctx.lineJoin = prevLJ;
+        }
+      }
+
+      function parseHexColor(value) {
+        const raw = String(value || "").trim();
+        const shortHex = /^#?([0-9a-f]{3})$/i.exec(raw);
+        if (shortHex) {
+          const h = shortHex[1];
+          return {
+            r: parseInt(h[0] + h[0], 16),
+            g: parseInt(h[1] + h[1], 16),
+            b: parseInt(h[2] + h[2], 16),
+          };
+        }
+
+        const fullHex = /^#?([0-9a-f]{6})$/i.exec(raw);
+        if (!fullHex) return null;
+        const h = fullHex[1];
+        return {
+          r: parseInt(h.slice(0, 2), 16),
+          g: parseInt(h.slice(2, 4), 16),
+          b: parseInt(h.slice(4, 6), 16),
+        };
+      }
+
+      function mixHexColor(colorA, colorB, amount = 0.5) {
+        const a = parseHexColor(colorA);
+        const b = parseHexColor(colorB);
+        if (!a || !b) return colorA || colorB || "#000000";
+
+        const t = clamp01(amount);
+        const r = Math.round(a.r + (b.r - a.r) * t);
+        const g = Math.round(a.g + (b.g - a.g) * t);
+        const bMix = Math.round(a.b + (b.b - a.b) * t);
+        return `rgb(${r}, ${g}, ${bMix})`;
+      }
+
+      function stableNoise2D(x, y, seed = 0) {
+        const n = Math.sin((x * 12.9898) + (y * 78.233) + (seed * 37.719)) * 43758.5453;
+        return n - Math.floor(n);
+      }
+
+      function drawBasicStroke(_ctx, from, to, opts) {
+        withCtxStyle(_ctx, opts, () => {
+          _ctx.beginPath();
+          _ctx.moveTo(from.x, from.y);
+          _ctx.lineTo(to.x, to.y);
+          _ctx.stroke();
+        });
+      }
+
+      function drawCrayonStroke(_ctx, from, to, opts) {
+        const sizeBase = Math.max(1, Number(opts?.size || 4));
+        const alphaBase = clamp01(opts?.alpha ?? 1);
+
+        drawBasicStroke(_ctx, from, to, { ...opts, size: sizeBase, alpha: alphaBase * 0.88 });
+
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const len = Math.hypot(dx, dy);
+
+        if (len <= 0.001) {
+          withCtxStyle(_ctx, { ...opts, size: Math.max(1, sizeBase * 0.6), alpha: alphaBase * 0.28 }, () => {
+            _ctx.beginPath();
+            _ctx.arc(from.x, from.y, Math.max(0.6, sizeBase * 0.18), 0, Math.PI * 2);
+            _ctx.fill();
+          });
+          return;
+        }
+
+        const nx = -dy / len;
+        const ny = dx / len;
+        const tx = dx / len;
+        const ty = dy / len;
+        const steps = Math.max(8, Math.ceil(len / Math.max(1, sizeBase * 0.35)));
+
+        withCtxStyle(_ctx, { ...opts, size: Math.max(1, sizeBase * 0.52), alpha: alphaBase * 0.26 }, () => {
+          for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const bx = from.x + (dx * t);
+            const by = from.y + (dy * t);
+
+            const side = (stableNoise2D(bx, by, i + 11) - 0.5) * sizeBase * 0.92;
+            const along = (stableNoise2D(by, bx, i + 29) - 0.5) * sizeBase * 0.35;
+
+            const px = bx + (nx * side) + (tx * along);
+            const py = by + (ny * side) + (ty * along);
+            const radius = Math.max(0.55, sizeBase * (0.07 + stableNoise2D(px, py, i + 47) * 0.14));
+
+            _ctx.beginPath();
+            _ctx.arc(px, py, radius, 0, Math.PI * 2);
+            _ctx.fill();
+          }
+        });
+      }
+
+      function drawWatercolorStroke(_ctx, from, to, opts) {
+        const sizeBase = Math.max(1, Number(opts?.size || 4));
+        const alphaBase = clamp01(opts?.alpha ?? 1);
+
+        drawBasicStroke(_ctx, from, to, { ...opts, size: sizeBase * 2.0, alpha: alphaBase * 0.14 });
+        drawBasicStroke(_ctx, from, to, { ...opts, size: sizeBase * 1.42, alpha: alphaBase * 0.24 });
+        drawBasicStroke(_ctx, from, to, { ...opts, size: sizeBase * 0.92, alpha: alphaBase * 0.5 });
+      }
+
+      function drawOilStroke(_ctx, from, to, opts) {
+        const sizeBase = Math.max(1, Number(opts?.size || 4));
+        const alphaBase = clamp01(opts?.alpha ?? 1);
+        const darkTone = mixHexColor(opts?.color, "#121722", 0.22);
+        const lightTone = mixHexColor(opts?.color, "#ffffff", 0.33);
+
+        drawBasicStroke(_ctx, from, to, { ...opts, color: darkTone, size: sizeBase * 1.18, alpha: alphaBase * 0.86 });
+        drawBasicStroke(_ctx, from, to, { ...opts, color: opts?.color, size: sizeBase * 0.92, alpha: alphaBase * 0.72 });
+
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const len = Math.hypot(dx, dy);
+        if (len > 0.001) {
+          const nx = -dy / len;
+          const ny = dx / len;
+          const offset = sizeBase * 0.22;
+
+          drawBasicStroke(_ctx, {
+            x: from.x + (nx * offset),
+            y: from.y + (ny * offset),
+          }, {
+            x: to.x + (nx * offset),
+            y: to.y + (ny * offset),
+          }, {
+            ...opts,
+            color: lightTone,
+            size: Math.max(1, sizeBase * 0.26),
+            alpha: alphaBase * 0.45,
+          });
+
+          const tx = dx / len;
+          const ty = dy / len;
+          const steps = Math.max(6, Math.ceil(len / Math.max(1, sizeBase * 0.85)));
+
+          withCtxStyle(_ctx, { ...opts, color: darkTone, size: Math.max(1, sizeBase * 0.45), alpha: alphaBase * 0.18 }, () => {
+            for (let i = 0; i <= steps; i++) {
+              const t = i / steps;
+              const jitter = (stableNoise2D(from.x + i, from.y + i, 71) - 0.5) * sizeBase * 0.45;
+              const px = from.x + (dx * t) + (nx * jitter);
+              const py = from.y + (dy * t) + (ny * jitter);
+              const dotRadius = Math.max(0.45, sizeBase * 0.06);
+
+              _ctx.beginPath();
+              _ctx.arc(px + (tx * 0.3), py + (ty * 0.3), dotRadius, 0, Math.PI * 2);
+              _ctx.fill();
+            }
+          });
+        }
+      }
+
+      function drawStroke(_ctx, from, to, opts) {
+        const drawOpts = (opts && typeof opts === "object") ? opts : {};
+        const texture = normalizeBrushTextureName(drawOpts.texture);
+
+        if (drawOpts.comp === "destination-out" || texture === "flat") {
+          drawBasicStroke(_ctx, from, to, drawOpts);
+          return;
+        }
+
+        if (texture === "crayon") {
+          drawCrayonStroke(_ctx, from, to, drawOpts);
+          return;
+        }
+
+        if (texture === "watercolor") {
+          drawWatercolorStroke(_ctx, from, to, drawOpts);
+          return;
+        }
+
+        if (texture === "oil") {
+          drawOilStroke(_ctx, from, to, drawOpts);
+          return;
+        }
+
+        drawBasicStroke(_ctx, from, to, drawOpts);
+      }
+
+      function drawSpray(_ctx, points, opts) {
+        withCtxStyle(_ctx, opts, () => {
+          for (const p of points) {
+            _ctx.beginPath();
+            _ctx.arc(p.x, p.y, 1, 0, Math.PI * 2);
+            _ctx.fill();
+          }
+        });
+      }
+
+      function drawShape(_ctx, shape, opts) {
+        const { kind, x1, y1, x2, y2 } = shape;
+        const left = Math.min(x1, x2);
+        const top = Math.min(y1, y2);
+        const w = Math.abs(x2 - x1);
+        const h = Math.abs(y2 - y1);
+
+        withCtxStyle(_ctx, opts, () => {
+          if (kind === "line") {
+            _ctx.beginPath();
+            _ctx.moveTo(x1, y1);
+            _ctx.lineTo(x2, y2);
+            _ctx.stroke();
+            return;
+          }
+
+          if (kind === "rect" || kind === "rectFill") {
+            if (kind === "rectFill") _ctx.fillRect(left, top, w, h);
+            else _ctx.strokeRect(left, top, w, h);
+            return;
+          }
+
+          const cx = left + w / 2;
+          const cy = top + h / 2;
+          const rx = w / 2;
+          const ry = h / 2;
+
+          _ctx.beginPath();
+          _ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+          if (kind === "ellipseFill" || kind === "circleFill") _ctx.fill();
+          else _ctx.stroke();
+        });
+      }
+
+      function hexToRgb(hex) {
+        const h = String(hex || "").replace("#", "");
+        if (h.length === 3) {
+          const r = parseInt(h[0] + h[0], 16);
+          const g = parseInt(h[1] + h[1], 16);
+          const b = parseInt(h[2] + h[2], 16);
+          return { r, g, b };
+        }
+        if (h.length === 6) {
+          const r = parseInt(h.slice(0, 2), 16);
+          const g = parseInt(h.slice(2, 4), 16);
+          const b = parseInt(h.slice(4, 6), 16);
+          return { r, g, b };
+        }
+        return { r: 0, g: 0, b: 0 };
+      }
+
+      function colorMatch(data, idx, tr, tg, tb, ta, tol = 0) {
+        const dr = data[idx] - tr;
+        const dg = data[idx + 1] - tg;
+        const db = data[idx + 2] - tb;
+        const da = data[idx + 3] - ta;
+        return (
+          Math.abs(dr) <= tol &&
+          Math.abs(dg) <= tol &&
+          Math.abs(db) <= tol &&
+          Math.abs(da) <= tol
+        );
+      }
+
+      function blendPixel(data, idx, nr, ng, nb, na01) {
+        const oa = data[idx + 3] / 255;
+        const a = na01;
+
+        data[idx]     = Math.round(data[idx]     * (1 - a) + nr * a);
+        data[idx + 1] = Math.round(data[idx + 1] * (1 - a) + ng * a);
+        data[idx + 2] = Math.round(data[idx + 2] * (1 - a) + nb * a);
+
+        const outA = Math.max(oa, a);
+        data[idx + 3] = Math.round(outA * 255);
+      }
+
+      function floodFillAt(x, y, hex, a01) {
+        x = Math.floor(x);
+        y = Math.floor(y);
+        if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return;
+
+        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = img.data;
+        const w = img.width;
+        const h = img.height;
+
+        const startIdx = (y * w + x) * 4;
+        const tr = data[startIdx];
+        const tg = data[startIdx + 1];
+        const tb = data[startIdx + 2];
+        const ta = data[startIdx + 3];
+
+        const { r: nr, g: ng, b: nb } = hexToRgb(hex);
+        const na = clamp01(a01);
+
+        if (na >= 1 && tr === nr && tg === ng && tb === nb && ta === 255) return;
+
+        const stack = [{ x, y }];
+        const tol = 0;
+
+        while (stack.length) {
+          const p = stack.pop();
+          const px = p.x;
+          const py = p.y;
+          if (px < 0 || py < 0 || px >= w || py >= h) continue;
+
+          const i = (py * w + px) * 4;
+          if (!colorMatch(data, i, tr, tg, tb, ta, tol)) continue;
+
+          blendPixel(data, i, nr, ng, nb, na);
+
+          stack.push({ x: px + 1, y: py });
+          stack.push({ x: px - 1, y: py });
+          stack.push({ x: px, y: py + 1 });
+          stack.push({ x: px, y: py - 1 });
+        }
+
+        ctx.putImageData(img, 0, 0);
+      }
+
+      function getCanvasPoint(e) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+        const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+        return { x, y };
+      }
+
+      function updateCanvasWrapFit() {
+        if (!canvasViewportEl || !canvasWrapEl) return;
+
+        const styles = getComputedStyle(canvasViewportEl);
+        const padX = (parseFloat(styles.paddingLeft) || 0) + (parseFloat(styles.paddingRight) || 0);
+        const padY = (parseFloat(styles.paddingTop) || 0) + (parseFloat(styles.paddingBottom) || 0);
+
+        const availableWidth = Math.max(1, canvasViewportEl.clientWidth - padX);
+        const availableHeight = Math.max(1, canvasViewportEl.clientHeight - padY);
+
+        let width = availableWidth;
+        let height = width / CANVAS_ASPECT;
+
+        if (height > availableHeight) {
+          height = availableHeight;
+          width = height * CANVAS_ASPECT;
+        }
+
+        const nextWidth = Math.max(1, Math.floor(width));
+        const nextHeight = Math.max(1, Math.floor(height));
+
+        canvasWrapEl.style.width = `${nextWidth}px`;
+        canvasWrapEl.style.height = `${nextHeight}px`;
+      }
+
+      function resetCanvasWrapFit() {
+        if (!canvasWrapEl) return;
+        canvasWrapEl.style.width = "";
+        canvasWrapEl.style.height = "";
+      }
+
+      function runCanvasWrapFitStabilized() {
+        requestAnimationFrame(() => {
+          updateCanvasWrapFit();
+          requestAnimationFrame(updateCanvasWrapFit);
+        });
+      }
+
+      function canDrawHere() {
+        return isDrawer && !isBreak && !isVictory && drawEnabled;
+      }
+
+      function closeMenuDropdown() {
+        if (!menuDropdownEl) return;
+        menuDropdownEl.hidden = true;
+        btnMenu.setAttribute("aria-expanded", "false");
+      }
+
+      function openMenuDropdown() {
+        if (!menuDropdownEl) return;
+        menuDropdownEl.hidden = false;
+        btnMenu.setAttribute("aria-expanded", "true");
+      }
+
+      function toggleMenuDropdown() {
+        if (!menuDropdownEl) return;
+        if (menuDropdownEl.hidden) openMenuDropdown();
+        else closeMenuDropdown();
+      }
+
+      function closeRulesModal() {
+        if (!rulesOverlayEl) return;
+        rulesOverlayEl.hidden = true;
+      }
+
+      function openRulesModal() {
+        if (!rulesOverlayEl) return;
+        rulesOverlayEl.hidden = false;
+      }
+
+      function closeReportPlayerModal() {
+        reportPlayerPending = false;
+        if (reportPlayerOverlayEl) reportPlayerOverlayEl.hidden = true;
+        if (reportPlayerSubmitBtnEl) reportPlayerSubmitBtnEl.disabled = false;
+        if (reportPlayerCancelBtnEl) reportPlayerCancelBtnEl.disabled = false;
+      }
+
+      function rebuildReportPlayerOptions() {
+        if (!reportPlayerSelectEl) return;
+        reportPlayerSelectEl.innerHTML = "";
+
+        const options = (latestRankingPlayers || []).filter((p) => p && p.id && p.id !== mySocketId);
+        if (!options.length) {
+          const opt = document.createElement("option");
+          opt.value = "";
+          opt.textContent = "Nenhum jogador disponível";
+          reportPlayerSelectEl.appendChild(opt);
+          reportPlayerSelectEl.disabled = true;
+          if (reportPlayerSubmitBtnEl) reportPlayerSubmitBtnEl.disabled = true;
+          return;
+        }
+
+        reportPlayerSelectEl.disabled = false;
+        if (reportPlayerSubmitBtnEl) reportPlayerSubmitBtnEl.disabled = false;
+        options.forEach((p) => {
+          const opt = document.createElement("option");
+          opt.value = String(p.id);
+          opt.textContent = `${formatNickLabel(p.nick, p.isAdmin === true)} (${Number(p.score || 0)} pts)`;
+          reportPlayerSelectEl.appendChild(opt);
+        });
+      }
+
+      function openReportPlayerModal() {
+        if (!reportPlayerOverlayEl) return;
+        rebuildReportPlayerOptions();
+        reportPlayerOverlayEl.hidden = false;
+      }
+
+      function stopAfkCountdown() {
+        if (afkCountdownTimer) {
+          clearInterval(afkCountdownTimer);
+          afkCountdownTimer = null;
+        }
+      }
+
+      function renderAfkCountdown() {
+        if (!afkCountdownEl) return;
+        if (!afkDeadlineAt) {
+          afkCountdownEl.textContent = "30";
+          return;
+        }
+
+        const remainingMs = Math.max(0, Number(afkDeadlineAt) - Date.now());
+        const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
+        afkCountdownEl.textContent = String(remainingSec);
+
+        if (remainingMs <= 0 && afkStillHereBtnEl) {
+          afkStillHereBtnEl.disabled = true;
+        }
+      }
+
+      function closeAfkOverlay() {
+        afkConfirmPending = false;
+        afkDeadlineAt = null;
+        stopAfkCountdown();
+        if (afkOverlayEl) afkOverlayEl.hidden = true;
+        if (afkStillHereBtnEl) afkStillHereBtnEl.disabled = false;
+      }
+
+      function openAfkOverlay(deadlineAt) {
+        if (!afkOverlayEl) return;
+
+        afkConfirmPending = false;
+        afkDeadlineAt = Number(deadlineAt || 0) > 0 ? Number(deadlineAt) : (Date.now() + 30000);
+        afkOverlayEl.hidden = false;
+        if (afkStillHereBtnEl) afkStillHereBtnEl.disabled = false;
+
+        renderAfkCountdown();
+        stopAfkCountdown();
+        afkCountdownTimer = setInterval(renderAfkCountdown, 250);
+      }
+
+      function canUseReportNow() {
+        return !isDrawer && !isBreak && !isVictory && isRoundActiveNow() && drawEnabled;
+      }
+
+      function closeReportConfirm() {
+        reportConfirmPending = false;
+        if (reportConfirmOverlayEl) reportConfirmOverlayEl.hidden = true;
+        if (reportConfirmSubmitEl) reportConfirmSubmitEl.disabled = false;
+        if (reportConfirmCancelEl) reportConfirmCancelEl.disabled = false;
+      }
+
+      function openReportConfirm() {
+        if (!canUseReportNow() || reportVoted || reportConfirmPending) return;
+        if (!reportConfirmOverlayEl) return;
+        reportConfirmOverlayEl.hidden = false;
+        reportConfirmSubmitEl.disabled = false;
+        reportConfirmCancelEl.disabled = false;
+      }
+
+      function applyReportButtonState() {
+        const canShow = canUseReportNow() && !reportVoted;
+        btnReport.style.display = canShow ? "inline-flex" : "none";
+
+        if (!canShow) {
+          btnReport.disabled = true;
+          btnReport.style.opacity = "0.4";
+          btnReport.classList.remove("report-btn--ready");
+          closeReportConfirm();
+          return;
+        }
+
+        btnReport.disabled = reportConfirmPending;
+        btnReport.style.opacity = reportConfirmPending ? "0.6" : "1";
+        btnReport.classList.toggle("report-btn--ready", !reportConfirmPending);
+      }
+
+      function applyCanvasState() {
+        const isRoundActive = isRoundActiveNow();
+
+        if (isVictory) {
+          canvasStatusEl.textContent = "Vitória (canvas travado).";
+        } else if (isBreak) {
+          canvasStatusEl.textContent = "Intervalo (canvas travado).";
+        } else if (!isDrawer) {
+          canvasStatusEl.textContent = "Assistindo o desenho...";
+        } else if (!drawEnabled) {
+          canvasStatusEl.textContent = "Sua vez! Escolha: Desenhar ou Pular.";
+        } else {
+          canvasStatusEl.textContent = `Desenhando (${tool})...`;
+        }
+
+        updateDrawerControls(isDrawer, isRoundActive);
+
+        const toolsEnabled = isDrawer && isRoundActive && drawEnabled;
+        setToolControlsEnabled(toolsEnabled);
+        syncBrushTextureControl(toolsEnabled);
+        toolsPanelEl.classList.toggle("tools-panel--active", toolsEnabled);
+        if (mainAreaEl) {
+          mainAreaEl.classList.toggle("mainArea--with-tools", toolsEnabled);
+        }
+
+        const hintEnabled =
+          isDrawer &&
+          isRoundActive &&
+          !isBreak &&
+          !isVictory &&
+          drawEnabled &&
+          hintAvailable;
+        setHintButtonEnabled(hintEnabled);
+
+        const canDrawNow = canDrawHere();
+        canvas.dataset.canDraw = canDrawNow ? "1" : "0";
+        canvas.style.pointerEvents = canDrawNow ? "auto" : "none";
+        applyCanvasToolCursor(canDrawNow);
+        updateTurnOverlay();
+        updateDrawerTopBar();
+
+        if (isDrawer && isRoundActive && !drawEnabled && !isBreak && !isVictory) {
+          showDrawPrompt(lastSecretWord);
+        } else {
+          hideDrawPrompt();
+        }
+
+        applyReportButtonState();
+        const compactCanvasMode =
+          toolsEnabled ||
+          drawControlsEl.style.display !== "none" ||
+          !drawerTopBarEl.hidden;
+
+        if (!compactCanvasMode) {
+          lastCanvasFitLayoutKey = "";
+          resetCanvasWrapFit();
+          return;
+        }
+
+        const fitLayoutKey = [
+          toolsEnabled ? 1 : 0,
+          drawControlsEl.style.display === "none" ? 0 : 1,
+          drawerTopBarEl.hidden ? 0 : 1,
+          isRoundActive ? 1 : 0,
+          isDrawer ? 1 : 0,
+          drawEnabled ? 1 : 0,
+        ].join("|");
+
+        if (fitLayoutKey !== lastCanvasFitLayoutKey) {
+          lastCanvasFitLayoutKey = fitLayoutKey;
+          runCanvasWrapFitStabilized();
+        }
+      }
+
+      function sendSnapshot() {
+        if (!isDrawer) return;
+        flushPendingDrawActions();
+        try {
+          const snapCanvas = document.createElement("canvas");
+          snapCanvas.width = canvas.width;
+          snapCanvas.height = canvas.height;
+          const snapCtx = snapCanvas.getContext("2d");
+
+          if (!snapCtx) return;
+
+          fillCanvasWhite(snapCtx, snapCanvas.width, snapCanvas.height);
+          snapCtx.drawImage(canvas, 0, 0, canvas.width, canvas.height);
+
+          const dataUrl = snapCanvas.toDataURL("image/png");
+          socket.emit("canvasSnapshot", { roomId, dataUrl });
+        } catch (_) {}
+      }
+
+      let pointerDown = false;
+      let startPt = null;
+      let lastPt = null;
+      const DRAW_BATCH_INTERVAL_MS = 33;
+      const DRAW_BATCH_MAX = 24;
+      let pendingDrawActions = [];
+      let drawBatchTimer = null;
+
+      function currentDrawOpts() {
+        if (tool === "eraser") return { color: "#000000", size, alpha: 1, comp: "destination-out" };
+        const opts = { color, size, alpha, comp: "source-over" };
+        if (tool === "brush") {
+          opts.texture = normalizeBrushTextureName(brushTexture);
+        }
+        return opts;
+      }
+
+      function applyActionLocal(action) {
+        if (!action || typeof action !== "object") return;
+
+        if (action.type === "clear") {
+          clearCanvasLocal();
+          clearOverlay();
+          return;
+        }
+        if (action.type === "stroke") { drawStroke(ctx, action.from, action.to, action.opts); return; }
+        if (action.type === "spray") { drawSpray(ctx, action.points || [], action.opts); return; }
+        if (action.type === "shape") { drawShape(ctx, action.shape, action.opts); return; }
+        if (action.type === "fill") { floodFillAt(action.x, action.y, action.color, action.alpha); return; }
+      }
+
+      function previewShape(shape, opts) { clearOverlay(); drawShape(octx, shape, opts); }
+
+      function flushPendingDrawActions() {
+        if (!pendingDrawActions.length) return;
+
+        const batch = pendingDrawActions.slice(0);
+        pendingDrawActions = [];
+
+        if (drawBatchTimer) {
+          clearTimeout(drawBatchTimer);
+          drawBatchTimer = null;
+        }
+
+        if (batch.length === 1) {
+          socket.emit("drawAction", { roomId, action: batch[0] });
+          return;
+        }
+
+        socket.emit("drawAction", { roomId, actions: batch });
+      }
+
+      function resetPendingDrawActions() {
+        pendingDrawActions = [];
+        if (drawBatchTimer) {
+          clearTimeout(drawBatchTimer);
+          drawBatchTimer = null;
+        }
+      }
+
+      function scheduleDrawBatchFlush() {
+        if (drawBatchTimer) return;
+        drawBatchTimer = setTimeout(() => {
+          drawBatchTimer = null;
+          flushPendingDrawActions();
+        }, DRAW_BATCH_INTERVAL_MS);
+      }
+
+      function sendAction(action) {
+        historyStack.push(action);
+        redoStack = [];
+        pendingDrawActions.push(action);
+        if (pendingDrawActions.length >= DRAW_BATCH_MAX) {
+          flushPendingDrawActions();
+          return;
+        }
+        scheduleDrawBatchFlush();
+      }
+
+      loadThemePreference();
+
+      initPalette();
+      setTool("brush");
+      setColor("#000000");
+      setSize(4);
+      setAlpha(1);
+      setBrushTexture("flat");
+
+      toolSelect.addEventListener("change", () => setTool(toolSelect.value));
+      toolButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          if (!btn.dataset.tool) return;
+          setTool(btn.dataset.tool);
+        });
+      });
+      if (brushTextureSelect) {
+        brushTextureSelect.addEventListener("change", () => setBrushTexture(brushTextureSelect.value));
+      }
+      sizeRange.addEventListener("input", () => setSize(sizeRange.value));
+      alphaRange.addEventListener("input", () => setAlpha(Number(alphaRange.value) / 100));
+      colorPicker.addEventListener("input", () => setColor(colorPicker.value));
+
+      btnClear.addEventListener("click", () => {
+        if (!canDrawHere()) return;
+
+        const action = { type: "clear" };
+        applyActionLocal(action);
+        sendAction(action);
+        sendSnapshot();
+        showDrawerCanvasNotice("Canvas limpo");
+      });
+
+      btnUndo.addEventListener("click", () => {
+        if (!canDrawHere()) return;
+        if (!historyStack.length) return;
+        resetPendingDrawActions();
+
+        const last = historyStack.pop();
+        redoStack.push(last);
+
+        rebuildCanvasFromHistory();
+
+        socket.emit("replaceHistory", { roomId, history: historyStack });
+        sendSnapshot();
+      });
+
+      btnRedo.addEventListener("click", () => {
+        if (!canDrawHere()) return;
+        if (!redoStack.length) return;
+        resetPendingDrawActions();
+
+        const a = redoStack.pop();
+        historyStack.push(a);
+
+        rebuildCanvasFromHistory();
+
+        socket.emit("replaceHistory", { roomId, history: historyStack });
+        sendSnapshot();
+      });
+
+      btnReport.addEventListener("click", () => {
+        if (btnReport.disabled) return;
+        openReportConfirm();
+      });
+
+      reportConfirmSubmitEl.addEventListener("click", () => {
+        if (reportConfirmPending) return;
+        if (!canUseReportNow() || reportVoted) {
+          closeReportConfirm();
+          applyReportButtonState();
+          return;
+        }
+
+        reportConfirmPending = true;
+        reportConfirmSubmitEl.disabled = true;
+        reportConfirmCancelEl.disabled = true;
+        applyReportButtonState();
+
+        socket.emit("reportDrawing", { roomId }, (res) => {
+          reportConfirmPending = false;
+          reportConfirmSubmitEl.disabled = false;
+          reportConfirmCancelEl.disabled = false;
+
+          if (!res || res.ok !== true) {
+            closeReportConfirm();
+            applyReportButtonState();
+            toast("Não deu pra denunciar.");
+            return;
+          }
+
+          reportVoted = true;
+          closeReportConfirm();
+          applyReportButtonState();
+
+          if (res.already) {
+            toast("Você já denunciou nesta rodada.");
+            return;
+          }
+
+          if (res.canceled) {
+            toast("Desenho cancelado!");
+            return;
+          }
+
+          if (res.count != null && res.needed != null) {
+            toast(`Denúncia: ${res.count}/${res.needed}`);
+          } else {
+            toast("Denunciado.");
+          }
+        });
+      });
+
+      reportConfirmCancelEl.addEventListener("click", () => {
+        if (reportConfirmPending) return;
+        closeReportConfirm();
+        applyReportButtonState();
+      });
+
+      reportConfirmOverlayEl.addEventListener("click", (e) => {
+        if (e.target !== reportConfirmOverlayEl) return;
+        if (reportConfirmPending) return;
+        closeReportConfirm();
+        applyReportButtonState();
+      });
+
+      reportPlayerSubmitBtnEl.addEventListener("click", () => {
+        if (reportPlayerPending) return;
+
+        const targetSocketId = String(reportPlayerSelectEl.value || "").trim();
+        if (!targetSocketId) {
+          toast("Selecione um jogador.");
+          return;
+        }
+
+        reportPlayerPending = true;
+        reportPlayerSubmitBtnEl.disabled = true;
+        reportPlayerCancelBtnEl.disabled = true;
+
+        socket.emit("reportPlayer", { roomId, targetSocketId }, (res) => {
+          reportPlayerPending = false;
+          reportPlayerSubmitBtnEl.disabled = false;
+          reportPlayerCancelBtnEl.disabled = false;
+
+          if (!res || res.ok !== true) {
+            toast("Nao foi possivel denunciar jogador.");
+            return;
+          }
+
+          closeReportPlayerModal();
+          toast(res.message || "Denuncia registrada.");
+        });
+      });
+
+      reportPlayerCancelBtnEl.addEventListener("click", () => {
+        if (reportPlayerPending) return;
+        closeReportPlayerModal();
+      });
+
+      reportPlayerOverlayEl.addEventListener("click", (e) => {
+        if (e.target !== reportPlayerOverlayEl) return;
+        if (reportPlayerPending) return;
+        closeReportPlayerModal();
+      });
+
+      afkStillHereBtnEl.addEventListener("click", () => {
+        if (afkConfirmPending) return;
+        afkConfirmPending = true;
+        afkStillHereBtnEl.disabled = true;
+
+        socket.emit("afkStillHere", { roomId }, (res) => {
+          afkConfirmPending = false;
+
+          if (!res || res.ok !== true) {
+            afkStillHereBtnEl.disabled = false;
+            toast("Nao foi possivel confirmar atividade.");
+            return;
+          }
+
+          closeAfkOverlay();
+        });
+      });
+
+      afkOverlayEl.addEventListener("click", (e) => {
+        if (e.target !== afkOverlayEl) return;
+      });
+
+      rulesCloseBtnEl.addEventListener("click", closeRulesModal);
+      rulesOverlayEl.addEventListener("click", (e) => {
+        if (e.target !== rulesOverlayEl) return;
+        closeRulesModal();
+      });
+
+      btnMenu.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleMenuDropdown();
+      });
+
+      menuLeaveBtnEl.addEventListener("click", () => {
+        closeMenuDropdown();
+        sairParaLobby();
+      });
+
+      menuRulesBtnEl.addEventListener("click", () => {
+        closeMenuDropdown();
+        openRulesModal();
+      });
+
+      menuReportPlayerBtnEl.addEventListener("click", () => {
+        closeMenuDropdown();
+        openReportPlayerModal();
+      });
+
+      document.addEventListener("click", (e) => {
+        if (!menuDropdownEl || menuDropdownEl.hidden) return;
+        if (menuDropdownEl.contains(e.target) || btnMenu.contains(e.target)) return;
+        closeMenuDropdown();
+      });
+
+      function tryJoin() {
+        if (saindo) return;
+        const payload = { roomId, nick, clientId, token };
+
+        if (isReservedAdminNick(nick)) {
+          const adminKey = resolveAdminKeyForCurrentNick();
+          if (adminKey == null) {
+            alert("Chave obrigatoria para esse nick.");
+            sessionStorage.setItem("omart_invite_room", roomId || "");
+            sessionStorage.setItem("omart_invite_nick", nick || "");
+            window.location.href = "/";
+            return;
+          }
+          payload.adminKey = adminKey;
+        }
+
+        socket.emit("joinRoom", payload);
+      }
+
+      socket.on("connect", () => {
+        mySocketId = socket.id;
+        tryJoin();
+      });
+
+      function sairParaLobby() {
+        if (saindo) return;
+        saindo = true;
+        skipBeforeUnloadWarning = true;
+        closeAfkOverlay();
+        releaseRoomTabLock();
+
+        socket.emit("leaveRoom", { roomId });
+
+        setTimeout(() => {
+          if (saindo) {
+            limparToken();
+            window.location.href = "/";
+          }
+        }, 1500);
+      }
+
+      socket.on("phaseUpdate", ({ roomId: rid, phase: ph, endsAt, totalMs, winner, winnerIsAdmin, reason, actorNick, actorIsAdmin }) => {
+        if (rid !== roomId) return;
+
+        const prevPhase = phase;
+        phase = ph || null;
+        phaseEndsAt = endsAt || null;
+        phaseTotalMs = totalMs || null;
+        const reasonUpper = String(reason || "").trim().toUpperCase();
+        const enteringBreak = ph === "break" && prevPhase !== "break";
+        const enteringVictory = ph === "victory" && prevPhase !== "victory";
+        const enteringRound = ph === "round" && prevPhase !== "round";
+
+        if (entrou && enteringBreak) {
+          if (reasonUpper === "REPORT_CANCEL") {
+            playReportCancelSfx();
+          } else if (reasonUpper === "SKIP" || reasonUpper === "AUTO_SKIP") {
+            playSkipTurnSfx();
+          } else {
+            playIntervalSfx();
+          }
+        }
+        if (entrou && enteringVictory && winner) {
+          playChampionVictorySfx();
+        }
+        if (enteringRound) {
+          tryPlayDrawerTurnSfx();
+        }
+
+        if (ph && lastFlipPhase !== ph) {
+          flipHourglass();
+          lastFlipPhase = ph;
+        }
+
+        isBreak = (ph === "break");
+        isVictory = (ph === "victory");
+
+        if (isBreak) waitDrawLock = false;
+        if (ph === "round" && prevPhase !== "round") {
+          hasAnyCorrect = false;
+          hintAvailable = true;
+          guessedThisRound = false;
+        }
+
+        if (ph !== "round") {
+          turnChoicePending = false;
+          drawerAccepted = false;
+          hasAnyCorrect = false;
+          guessedThisRound = false;
+          reportVoted = false;
+          hideDrawerCanvasNotice();
+        }
+
+        if (isVictory && winner) {
+          hideCanvasEventNotice();
+          renderVictoryNick(winner, winnerIsAdmin === true);
+          winnerOverlayEl.style.display = "flex";
+        } else if (!isVictory) {
+          winnerOverlayEl.style.display = "none";
+        }
+
+        if (ph === "break") {
+          showBreakNotice(reason, actorNick, actorIsAdmin);
+        } else if (ph === "round") {
+          showRoundTurnNotice();
+        } else if (ph !== "victory") {
+          hideCanvasEventNotice();
+        }
+
+        setDrawerQueueVisible(isBreak);
+
+        applyGuessLockState();
+        applyCanvasState();
+      });
+
+      socket.on("drawerQueue", ({ roomId: rid, next, in1, in2, nextIsAdmin, in1IsAdmin, in2IsAdmin }) => {
+        if (rid !== roomId) return;
+        renderDrawerQueueNick(dqNextEl, next, nextIsAdmin === true);
+        renderDrawerQueueNick(dqIn1El, in1, in1IsAdmin === true);
+        renderDrawerQueueNick(dqIn2El, in2, in2IsAdmin === true);
+      });
+
+      socket.on("roomState", ({ roomId: rid, state }) => {
+        if (rid !== roomId) return;
+        currentRoomState = state;
+        applyServerState(state);
+
+        if (state !== "playing") {
+          isDrawer = false;
+          isBreak = false;
+          isVictory = false;
+          currentDrawerNotice = null;
+          waitDrawLock = false;
+          guessedThisRound = false;
+          drawerId = null;
+          drawEnabled = false;
+          drawerAccepted = false;
+          turnChoicePending = false;
+          hasAnyCorrect = false;
+          hintAvailable = true;
+          reportVoted = false;
+
+          lastSecretWord = null;
+          lastHint = null;
+
+          setNoWord();
+          setHintButtonVisible(false);
+          setHintButtonEnabled(false);
+          hintInfoEl.textContent = "";
+
+          resetHistory();
+          resetPendingDrawActions();
+          clearCanvasLocal();
+          clearOverlay();
+
+          setDrawerQueueVisible(false);
+          winnerOverlayEl.style.display = "none";
+          hideCanvasEventNotice();
+          hideDrawerCanvasNotice();
+
+          applyGuessLockState();
+          applyCanvasState();
+        }
+
+        if (state === "playing") {
+          applyCanvasState();
+        }
+
+        syncWaitingPlayersNotice();
+      });
+
+      socket.on("roomUpdate", (players) => {
+        const list = Array.isArray(players) ? players : [];
+        const nextPresenceKeys = buildRoomPresenceKeySet(list);
+
+        if (roomPresenceSfxReady) {
+          let joinedCount = 0;
+          let leftCount = 0;
+
+          for (const key of nextPresenceKeys) {
+            if (!lastRoomPresenceKeys.has(key)) joinedCount++;
+          }
+          for (const key of lastRoomPresenceKeys) {
+            if (!nextPresenceKeys.has(key)) leftCount++;
+          }
+
+          if (joinedCount > 0) playPresenceBurst("join", joinedCount);
+          if (leftCount > 0) playPresenceBurst("leave", leftCount);
+        }
+
+        lastRoomPresenceKeys = nextPresenceKeys;
+        updatePlayersCountFromList(list);
+        syncMyAdminFlagFromPlayers(list);
+      });
+
+      socket.on("afkWarning", ({ roomId: rid, active, deadlineAt }) => {
+        if (rid !== roomId) return;
+        if (active) {
+          openAfkOverlay(deadlineAt);
+          return;
+        }
+        closeAfkOverlay();
+      });
+
+      socket.on("drawerUpdate", ({ roomId: rid, drawer }) => {
+        if (rid !== roomId) return;
+
+        renderDrawerName(drawer);
+        currentDrawerNotice = drawer && drawer.nick
+          ? { nick: drawer.nick, isAdmin: drawer.isAdmin === true }
+          : null;
+        drawerId = drawer?.id || null;
+
+        const wasDrawer = isDrawer;
+        const nowDrawer = !!drawer?.id && mySocketId && drawer.id === mySocketId;
+        isDrawer = nowDrawer;
+        drawerAccepted = isDrawer && drawEnabled;
+        turnChoicePending = false;
+
+        reportVoted = false;
+
+        if (isDrawer) waitDrawLock = false;
+
+        applyGuessLockState();
+        applyCanvasState();
+
+        if (isDrawer) {
+          if (lastSecretWord) showWord(lastSecretWord);
+          else wordAreaEl.textContent = "(carregando palavra...)";
+        } else {
+          if (lastHint?.mask) showMask(lastHint.mask);
+          else setNoWord();
+        }
+
+        if (!wasDrawer && nowDrawer) {
+          tryPlayDrawerTurnSfx();
+        }
+
+      });
+
+      socket.on("drawControl", ({ roomId: rid, enabled, reason }) => {
+        if (rid !== roomId) return;
+
+        drawEnabled = !!enabled;
+
+        if (drawEnabled) {
+          waitDrawLock = false;
+          turnChoicePending = false;
+          drawerAccepted = isDrawer;
+          hideCanvasEventNotice();
+        } else {
+          drawerAccepted = false;
+          turnChoicePending = false;
+          if (reason === "ROUND_START") {
+            hasAnyCorrect = false;
+            hintAvailable = true;
+          }
+        }
+
+        applyGuessLockState();
+        applyCanvasState();
+      });
+
+      socket.on("roundTimer", ({ roomId: rid, remainingMs }) => {
+        if (rid !== roomId) return;
+
+        if (remainingMs == null) {
+          roundTimerEl.textContent = "--";
+          return;
+        }
+
+        const secs = Math.ceil(remainingMs / 1000);
+        roundTimerEl.textContent = `${secs}s`;
+      });
+
+      socket.on("secretWord", ({ roomId: rid, word }) => {
+        if (rid !== roomId) return;
+
+        lastSecretWord = word || "";
+        setTurnOverlayWord(lastSecretWord);
+        setDrawerBarWord(lastSecretWord);
+        dpoWordEl.textContent = String(lastSecretWord || "").trim() || "(carregando...)";
+
+        if (isDrawer) showWord(lastSecretWord);
+        else {
+          if (lastHint?.mask) showMask(lastHint.mask);
+          else setNoWord();
+        }
+
+        updateTurnOverlay();
+      });
+
+      socket.on("hintUpdate", ({ roomId: rid, mask, revealed, maxReveal }) => {
+        if (rid !== roomId) return;
+
+        if (!mask) {
+          lastHint = null;
+          hintAvailable = true;
+          renderHintInfo();
+          if (!isDrawer) setNoWord();
+          applyCanvasState();
+          return;
+        }
+
+        lastHint = { mask, revealed: Number(revealed || 0), maxReveal: Number(maxReveal || 0) };
+        hintAvailable = Number(maxReveal || 0) > 0 && Number(revealed || 0) < Number(maxReveal || 0);
+        renderHintInfo();
+
+        if (!isDrawer) showMask(mask);
+        applyCanvasState();
+      });
+
+      socket.on("talkMessage", (msg) => {
+        if (!msg || msg.roomId !== roomId) return;
+        addLine(talkBoxEl, msg);
+      });
+
+      socket.on("guessMessage", (msg) => {
+        if (!msg || msg.roomId !== roomId) return;
+        addLine(guessBoxEl, msg);
+        const isReplay = msg.replay === true;
+
+        if (!isReplay && msg.kind === "systemBlue" && typeof msg.text === "string") {
+          const lower = msg.text.toLowerCase();
+          if (lower.includes("teve a vez pulada")) {
+            showCanvasEventNotice({
+              tone: "warn",
+              icon: "🏳️",
+              title: "VEZ PULADA",
+              text: msg.text,
+            });
+          } else if (lower.includes("perdeu a vez")) {
+            showCanvasEventNotice({
+              tone: "warn",
+              icon: "⏱️",
+              title: "PERDEU A VEZ",
+              text: msg.text,
+            });
+          }
+        }
+
+        if (!isReplay && isRoundActiveNow() && (msg.kind === "correct" || msg.kind === "you")) {
+          playCorrectSfx();
+          hasAnyCorrect = true;
+          hideCanvasEventNotice();
+          applyCanvasState();
+        }
+
+        if (msg.kind === "blocked" && typeof msg.text === "string" && msg.text.includes("Desenho cancelado")) {
+          reportVoted = false;
+          applyReportButtonState();
+        }
+      });
+
+      socket.on("guessLocked", ({ roomId: rid, locked, message, reason }) => {
+        if (rid !== roomId) return;
+
+        if (locked) {
+          if (reason === "WAIT_DRAW") waitDrawLock = true;
+          if (reason === "ALREADY_GUESSED") guessedThisRound = true;
+
+          guessInputEl.disabled = true;
+          guessSendEl.disabled = true;
+          guessInputEl.value = "";
+          guessInputEl.placeholder = message || "Aguardando o desenhista...";
+        }
+      });
+
+      socket.on("pointsGained", ({ roomId: rid, add, role }) => {
+        if (rid !== roomId) return;
+        const a = Number(add || 0);
+        if (!a) return;
+        if (role === "drawer") toast(`+${a} (desenhista)`);
+        else toast(`+${a}`);
+      });
+
+      socket.on("roundFirstCorrect", ({ roomId: rid }) => {
+        if (rid !== roomId) return;
+        hasAnyCorrect = true;
+        hideCanvasEventNotice();
+        applyCanvasState();
+      });
+
+      socket.on("scoreUpdate", ({ roomId: rid, players }) => {
+        if (rid !== roomId) return;
+        const list = Array.isArray(players) ? players : [];
+        renderRanking(list);
+        updatePlayersCountFromList(list);
+        const meByScore = list.find((p) => p && p.id === mySocketId) || null;
+        if (meByScore) {
+          myIsAdmin = meByScore.isAdmin === true;
+          renderMyNickName();
+        }
+        const me = list.find((p) => p && p.id === mySocketId) || null;
+        guessedThisRound = !!(me && me.guessed === true && me.isDrawer !== true);
+        hasAnyCorrect = isRoundActiveNow()
+          ? list.some((p) => p && p.guessed === true && p.isDrawer !== true)
+          : false;
+        applyGuessLockState();
+        applyCanvasState();
+      });
+
+      socket.on("clearCanvas", ({ roomId: rid }) => {
+        if (rid !== roomId) return;
+        reportVoted = false;
+        resetPendingDrawActions();
+        resetHistory();
+        clearCanvasLocal();
+        clearOverlay();
+        hideDrawerCanvasNotice();
+        applyReportButtonState();
+      });
+
+      socket.on("canvasSnapshot", ({ roomId: rid, dataUrl }) => {
+        if (rid !== roomId) return;
+        if (!dataUrl || typeof dataUrl !== "string") return;
+
+        const img = new Image();
+        img.onload = () => {
+          clearCanvasLocal();
+          clearOverlay();
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        };
+        img.src = dataUrl;
+      });
+
+      socket.on("drawAction", ({ roomId: rid, action, from }) => {
+        if (rid !== roomId) return;
+        if (from && mySocketId && from === mySocketId) return;
+
+        historyStack.push(action);
+        redoStack = [];
+        applyActionLocal(action);
+      });
+
+      socket.on("drawActionBatch", ({ roomId: rid, actions, from }) => {
+        if (rid !== roomId) return;
+        if (from && mySocketId && from === mySocketId) return;
+        if (!Array.isArray(actions) || !actions.length) return;
+
+        for (const action of actions) {
+          historyStack.push(action);
+          applyActionLocal(action);
+        }
+        redoStack = [];
+      });
+
+      socket.on("replaceHistory", ({ roomId: rid, history }) => {
+        if (rid !== roomId) return;
+        if (!Array.isArray(history)) return;
+
+        historyStack = history.slice();
+        redoStack = [];
+
+        rebuildCanvasFromHistory();
+        if (isDrawer) sendSnapshot();
+      });
+
+      btnStartDraw.addEventListener("click", requestStartDrawing);
+      btnSkipRound.addEventListener("click", requestSkipRound);
+      btnSkipTop.addEventListener("click", requestSkipRound);
+      turnDrawBtnEl.addEventListener("click", requestStartDrawing);
+      turnSkipBtnEl.addEventListener("click", requestSkipRound);
+      dpoDrawBtnEl.addEventListener("click", () => {
+        if (!isDrawer || isBreak || isVictory || !isRoundActiveNow()) return;
+        if (turnChoicePending) return;
+
+        turnChoicePending = true;
+        applyCanvasState();
+
+        socket.emit("startDrawing", { roomId }, (res) => {
+          if (res && res.ok === false) {
+            turnChoicePending = false;
+            applyCanvasState();
+          }
+        });
+      });
+
+      dpoSkipBtnEl.addEventListener("click", () => {
+        if (!isDrawer || isBreak || isVictory || !isRoundActiveNow()) return;
+        if (turnChoicePending) return;
+
+        turnChoicePending = true;
+        hideDrawPrompt();
+
+        socket.emit("skipRound", { roomId }, (res) => {
+          if (res && res.ok === false) {
+            turnChoicePending = false;
+            applyCanvasState();
+          }
+        });
+      });
+
+      canvas.addEventListener("pointerdown", (e) => {
+        if (canvas.dataset.canDraw !== "1") return;
+
+        const pt = getCanvasPoint(e);
+
+        if (tool === "fill") {
+          const action = { type: "fill", x: pt.x, y: pt.y, color, alpha };
+          applyActionLocal(action);
+          sendAction(action);
+          sendSnapshot();
+          return;
+        }
+
+        pointerDown = true;
+        canvas.setPointerCapture(e.pointerId);
+
+        startPt = pt;
+        lastPt = pt;
+      });
+
+      canvas.addEventListener("pointermove", (e) => {
+        if (!pointerDown) return;
+        if (canvas.dataset.canDraw !== "1") return;
+
+        const pt = getCanvasPoint(e);
+
+        if (tool === "brush" || tool === "eraser") {
+          const opts = currentDrawOpts();
+          const action = { type: "stroke", from: lastPt, to: pt, opts };
+
+          applyActionLocal(action);
+          sendAction(action);
+
+          lastPt = pt;
+          return;
+        }
+
+        if (tool === "spray") {
+          const opts = currentDrawOpts();
+
+          const density = 24;
+          const radius = Math.max(2, size * 2);
+
+          const points = [];
+          for (let i = 0; i < density; i++) {
+            const ang = Math.random() * Math.PI * 2;
+            const r = Math.random() * radius;
+            points.push({ x: pt.x + Math.cos(ang) * r, y: pt.y + Math.sin(ang) * r });
+          }
+
+          const action = { type: "spray", points, opts };
+          applyActionLocal(action);
+          sendAction(action);
+
+          lastPt = pt;
+          return;
+        }
+
+        const opts = currentDrawOpts();
+        let kind = tool;
+
+        if (tool === "circle" || tool === "circleFill") {
+          const dx = pt.x - startPt.x;
+          const dy = pt.y - startPt.y;
+          const side = Math.max(Math.abs(dx), Math.abs(dy));
+          const x2 = startPt.x + Math.sign(dx || 1) * side;
+          const y2 = startPt.y + Math.sign(dy || 1) * side;
+
+          previewShape({ kind, x1: startPt.x, y1: startPt.y, x2, y2 }, opts);
+          return;
+        }
+
+        if (tool === "line" || tool === "rect" || tool === "rectFill" || tool === "ellipse" || tool === "ellipseFill") {
+          previewShape({ kind, x1: startPt.x, y1: startPt.y, x2: pt.x, y2: pt.y }, opts);
+          return;
+        }
+      });
+
+      function endPointer(e) {
+        if (!pointerDown) return;
+        pointerDown = false;
+
+        if (canvas.dataset.canDraw !== "1") { clearOverlay(); return; }
+
+        const pt = getCanvasPoint(e);
+
+        if (tool !== "brush" && tool !== "eraser" && tool !== "spray" && tool !== "fill") {
+          const opts = currentDrawOpts();
+          let kind = tool;
+          let x2 = pt.x;
+          let y2 = pt.y;
+
+          if (tool === "circle" || tool === "circleFill") {
+            const dx = pt.x - startPt.x;
+            const dy = pt.y - startPt.y;
+            const side = Math.max(Math.abs(dx), Math.abs(dy));
+            x2 = startPt.x + Math.sign(dx || 1) * side;
+            y2 = startPt.y + Math.sign(dy || 1) * side;
+          }
+
+          const shape = { kind, x1: startPt.x, y1: startPt.y, x2, y2 };
+          const action = { type: "shape", shape, opts };
+
+          clearOverlay();
+          applyActionLocal(action);
+          sendAction(action);
+          sendSnapshot();
+        } else {
+          sendSnapshot();
+        }
+
+        startPt = null;
+        lastPt = null;
+      }
+
+      canvas.addEventListener("pointerup", endPointer);
+      canvas.addEventListener("pointercancel", endPointer);
+      canvas.addEventListener("pointerleave", endPointer);
+
+      btnLobby.addEventListener("click", sairParaLobby);
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        if (afkOverlayEl && !afkOverlayEl.hidden) return;
+        if (menuDropdownEl && !menuDropdownEl.hidden) {
+          closeMenuDropdown();
+          return;
+        }
+        if (reportPlayerOverlayEl && !reportPlayerOverlayEl.hidden) {
+          if (!reportPlayerPending) closeReportPlayerModal();
+          return;
+        }
+        if (rulesOverlayEl && !rulesOverlayEl.hidden) {
+          closeRulesModal();
+          return;
+        }
+        if (reportConfirmOverlayEl && !reportConfirmOverlayEl.hidden) {
+          if (!reportConfirmPending) {
+            closeReportConfirm();
+            applyReportButtonState();
+          }
+          return;
+        }
+        sairParaLobby();
+      });
+      themeToggleEl.addEventListener("click", toggleTheme);
+
+      btnHint.addEventListener("click", requestHint);
+      btnHintTop.addEventListener("click", requestHint);
+
+      talkSendEl.addEventListener("click", sendTalk);
+      talkInputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") sendTalk(); });
+
+      guessSendEl.addEventListener("click", sendGuess);
+      guessInputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") sendGuess(); });
+
+      socket.on("joined", ({ roomId: rid, players, youIsAdmin }) => {
+        if (rid !== roomId) return;
+        entrou = true;
+        joinedRoomForUnloadWarning = true;
+        skipBeforeUnloadWarning = false;
+        const list = Array.isArray(players) ? players : [];
+        lastRoomPresenceKeys = buildRoomPresenceKeySet(list);
+        roomPresenceSfxReady = true;
+        if (youIsAdmin === true || youIsAdmin === false) {
+          myIsAdmin = youIsAdmin === true;
+          renderMyNickName();
+        }
+        updatePlayersCountFromList(list);
+        syncMyAdminFlagFromPlayers(list);
+        currentRoomState = list.length >= 2 ? "playing" : "lobby";
+        applyServerState(currentRoomState);
+      });
+
+      socket.on("roomFull", () => {
+        alert("Sala cheia! Voltando pro lobby.");
+        limparToken();
+        window.location.href = "/";
+      });
+
+      socket.on("nickInUse", ({ roomId: rid, nick: nn }) => {
+        if (rid !== roomId) return;
+        alert(`Esse nick "${nn}" já está jogando na sala "${rid}". Tente outro nick.`);
+        limparToken();
+        window.location.href = "/";
+      });
+
+      socket.on("nickInvalid", () => {
+        alert("Nick inválido. Volte e digite um nick.");
+        limparToken();
+        window.location.href = "/";
+      });
+
+      socket.on("nickBlocked", ({ roomId: rid } = {}) => {
+        if (rid && rid !== roomId) return;
+        alert(`Esse nick é reservado. Chave inválida para "${nick}".`);
+        sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+        limparToken();
+        window.location.href = "/";
+      });
+
+      socket.on("left", () => {
+        closeAfkOverlay();
+        skipBeforeUnloadWarning = true;
+        limparToken();
+        window.location.href = "/";
+      });
+
+      function updateBoardScale() {
+        const limiteEl = document.getElementById("limite");
+        if (!limiteEl || !appStageEl) return;
+
+        const baseWidth = Number(appStageEl.dataset.baseWidth) || 1500;
+        const baseHeight = Number(appStageEl.dataset.baseHeight) || 900;
+        const rootStyles = getComputedStyle(document.documentElement);
+        const gutter = parseFloat(rootStyles.getPropertyValue("--gutter")) || 0;
+
+        const availableWidth = Math.max(1, window.innerWidth - (gutter * 2));
+        const availableHeight = Math.max(1, window.innerHeight - (gutter * 2));
+        const scale = Math.min(1, availableWidth / baseWidth, availableHeight / baseHeight);
+
+        document.documentElement.style.setProperty("--board-w", `${baseWidth}px`);
+        document.documentElement.style.setProperty("--board-h", `${baseHeight}px`);
+        document.documentElement.style.setProperty("--board-scale", String(scale));
+
+        requestAnimationFrame(() => {
+          if (lastCanvasFitLayoutKey) runCanvasWrapFitStabilized();
+          else resetCanvasWrapFit();
+        });
+      }
+
+      window.addEventListener("resize", updateBoardScale, { passive: true });
+      window.addEventListener("load", updateBoardScale, { passive: true });
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", updateBoardScale, { passive: true });
+      }
+      updateBoardScale();
+
+      renderDrawerName(null);
+      roomStatusEl.textContent = "Conectando...";
+      roundTimerEl.textContent = "--";
+      setNoWord();
+      setHintButtonVisible(false);
+      setHintButtonEnabled(false);
+      hintInfoEl.textContent = "";
+
+      resetHistory();
+      clearCanvasLocal();
+      clearOverlay();
+      applyGuessLockState();
+      applyCanvasState();
+
+      setTimeout(() => {
+        if (!entrou) {
+          alert("Não foi possível entrar na sala. Verifique a conexão e tente de novo.");
+        }
+      }, 2500);
+    })();
