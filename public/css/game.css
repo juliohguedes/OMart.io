@@ -356,6 +356,12 @@ body::before {
   filter: brightness(1.05);
 }
 
+#menuDropdown button[aria-pressed="true"] {
+  border-color: rgba(39, 124, 238, 0.45);
+  background: linear-gradient(180deg, rgba(216, 238, 255, 0.98) 0%, rgba(175, 215, 250, 0.98) 100%);
+  color: #10375f;
+}
+
 #topTitle {
   min-width: 0;
   color: var(--title-color);
@@ -2078,4 +2084,143 @@ body.theme-night #themeToggle {
 
 #limite #bottomArea {
   grid-template-columns: 1fr 1fr;
+}
+
+body.mobile-layout-enabled {
+  --gutter: calc(8px * var(--ui-scale));
+  --gap: calc(10px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #appViewport {
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: calc(8px * var(--ui-scale));
+  padding-bottom: calc(8px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #topBar {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto auto;
+  gap: calc(8px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #topBarLeft {
+  gap: calc(10px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #topTitle {
+  font-size: calc(52px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #topBarRight {
+  width: 100%;
+  justify-content: space-between;
+  gap: calc(8px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #btnReport,
+body.mobile-layout-enabled #btnWarnEmote {
+  width: calc(148px * var(--ui-scale));
+  height: calc(58px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #themeToggle {
+  width: calc(58px * var(--ui-scale));
+  height: calc(58px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #timerBox {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: calc(58px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #phaseLabel {
+  font-size: calc(40px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #menuDropdown {
+  min-width: min(92vw, calc(640px * var(--ui-scale)));
+  max-width: min(95vw, calc(760px * var(--ui-scale)));
+}
+
+body.mobile-layout-enabled #limite #gameRoot {
+  padding: calc(12px * var(--ui-scale));
+  grid-template-rows: auto minmax(0, 1fr) minmax(calc(420px * var(--ui-scale)), 42%);
+  gap: calc(10px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #limite #mainArea {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(calc(260px * var(--ui-scale)), 32%);
+}
+
+body.mobile-layout-enabled #limite #mainArea.mainArea--with-tools {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) minmax(calc(260px * var(--ui-scale)), 32%);
+}
+
+body.mobile-layout-enabled #toolsPanel {
+  max-height: calc(360px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #canvasViewport {
+  padding: 0 calc(8px * var(--ui-scale)) calc(8px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #canvasWrap {
+  width: min(100%, calc(1450px * var(--ui-scale)));
+}
+
+body.mobile-layout-enabled #drawerTopBar {
+  min-height: calc(92px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #guessHintBanner {
+  min-height: calc(74px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #rankingPanel {
+  padding: calc(10px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .rankingHeader h3 {
+  font-size: calc(46px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .player-row {
+  min-height: calc(56px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .player-name {
+  font-size: calc(32px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .player-points {
+  font-size: calc(30px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #limite #bottomArea {
+  grid-template-columns: 1fr;
+  gap: calc(10px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .chatPanel {
+  padding: calc(12px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .chatPanel h3 {
+  font-size: calc(46px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #guessBox > div,
+body.mobile-layout-enabled #talkBox > div {
+  font-size: calc(28px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #guessInput,
+body.mobile-layout-enabled #talkInput {
+  height: calc(72px * var(--ui-scale));
+  font-size: calc(28px * var(--ui-scale));
+  padding: 0 calc(20px * var(--ui-scale));
 }

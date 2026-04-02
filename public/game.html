@@ -31,6 +31,7 @@
           <button id="menuLeaveBtn" type="button">Sair</button>
           <button id="menuRulesBtn" type="button">Regras</button>
           <button id="menuMuteBtn" type="button" aria-pressed="false">Mutar sons e notificacoes</button>
+          <button id="menuMobileLayoutBtn" type="button" aria-pressed="false">📱 Modo celular: desligado</button>
           <button id="menuReportPlayerBtn" type="button">Denunciar jogador</button>
         </div>
       </div>
@@ -583,6 +584,7 @@
       const menuLeaveBtnEl = document.getElementById("menuLeaveBtn");
       const menuRulesBtnEl = document.getElementById("menuRulesBtn");
       const menuMuteBtnEl = document.getElementById("menuMuteBtn");
+      const menuMobileLayoutBtnEl = document.getElementById("menuMobileLayoutBtn");
       const menuReportPlayerBtnEl = document.getElementById("menuReportPlayerBtn");
       const roomNameEl = document.getElementById("roomName");
       const nickNameEl = document.getElementById("nickName");
@@ -769,7 +771,13 @@
 
       const THEME_KEY = "omart_theme";
       const SOUND_NOTIF_MUTE_KEY = "omart_mute_sound_notif";
+      const MOBILE_LAYOUT_MODE_KEY = "omart_mobile_layout_mode";
+      const MOBILE_LAYOUT_BASE_W = 980;
+      const MOBILE_LAYOUT_BASE_H = 1700;
+      const MOBILE_LAYOUT_LANDSCAPE_W = 1400;
+      const MOBILE_LAYOUT_LANDSCAPE_H = 900;
       let isSoundNotifMuted = false;
+      let isMobileLayoutEnabled = false;
 
       function getAllSfxClips() {
         return [
@@ -819,6 +827,32 @@
       function loadSoundNotifMutePreference() {
         const saved = String(localStorage.getItem(SOUND_NOTIF_MUTE_KEY) || "").trim();
         applySoundNotifMuteState(saved === "1", { persist: false });
+      }
+
+      function updateMobileLayoutMenuButtonLabel() {
+        if (!menuMobileLayoutBtnEl) return;
+        menuMobileLayoutBtnEl.textContent = isMobileLayoutEnabled
+          ? "📱 Modo celular: ligado"
+          : "📱 Modo celular: desligado";
+        menuMobileLayoutBtnEl.setAttribute("aria-pressed", isMobileLayoutEnabled ? "true" : "false");
+      }
+
+      function applyMobileLayoutModeState(nextEnabled, { persist = true } = {}) {
+        isMobileLayoutEnabled = !!nextEnabled;
+        document.body.classList.toggle("mobile-layout-enabled", isMobileLayoutEnabled);
+
+        if (persist) {
+          localStorage.setItem(MOBILE_LAYOUT_MODE_KEY, isMobileLayoutEnabled ? "1" : "0");
+        }
+
+        updateMobileLayoutMenuButtonLabel();
+        updateBoardScale();
+        applyCanvasState();
+      }
+
+      function loadMobileLayoutModePreference() {
+        const saved = String(localStorage.getItem(MOBILE_LAYOUT_MODE_KEY) || "").trim();
+        applyMobileLayoutModeState(saved === "1", { persist: false });
       }
 
       function getPresenceAudioContext() {
@@ -3015,6 +3049,7 @@
       }
 
       loadSoundNotifMutePreference();
+      loadMobileLayoutModePreference();
       loadThemePreference();
 
       initPalette();
@@ -3226,6 +3261,11 @@
 
       menuMuteBtnEl.addEventListener("click", () => {
         applySoundNotifMuteState(!isSoundNotifMuted);
+        closeMenuDropdown();
+      });
+
+      menuMobileLayoutBtnEl.addEventListener("click", () => {
+        applyMobileLayoutModeState(!isMobileLayoutEnabled);
         closeMenuDropdown();
       });
 
@@ -4008,8 +4048,16 @@
         const limiteEl = document.getElementById("limite");
         if (!limiteEl || !appStageEl) return;
 
-        const baseWidth = Number(appStageEl.dataset.baseWidth) || 1500;
-        const baseHeight = Number(appStageEl.dataset.baseHeight) || 900;
+        const defaultBaseWidth = Number(appStageEl.dataset.baseWidth) || 1500;
+        const defaultBaseHeight = Number(appStageEl.dataset.baseHeight) || 900;
+        const isLandscapeViewport = window.innerWidth > window.innerHeight;
+
+        const baseWidth = isMobileLayoutEnabled
+          ? (isLandscapeViewport ? MOBILE_LAYOUT_LANDSCAPE_W : MOBILE_LAYOUT_BASE_W)
+          : defaultBaseWidth;
+        const baseHeight = isMobileLayoutEnabled
+          ? (isLandscapeViewport ? MOBILE_LAYOUT_LANDSCAPE_H : MOBILE_LAYOUT_BASE_H)
+          : defaultBaseHeight;
         const rootStyles = getComputedStyle(document.documentElement);
         const gutter = parseFloat(rootStyles.getPropertyValue("--gutter")) || 0;
 
@@ -4019,6 +4067,8 @@
 
         document.documentElement.style.setProperty("--board-w", `${baseWidth}px`);
         document.documentElement.style.setProperty("--board-h", `${baseHeight}px`);
+        document.documentElement.style.setProperty("--board-min-w", `${baseWidth}px`);
+        document.documentElement.style.setProperty("--board-min-h", `${baseHeight}px`);
         document.documentElement.style.setProperty("--board-scale", String(scale));
 
         requestAnimationFrame(() => {
