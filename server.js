@@ -27,6 +27,7 @@ const ENFORCE_GUARDS = true; // se false, não bloquear nada (só observabilidad
 const roomState = {}; // { [roomId]: "lobby" | "playing" }
 const roomDrawerIndex = {}; // { [roomId]: number }
 const roomDrawerClientId = {}; // { [roomId]: string|null } -> fonte de verdade do desenhista
+const roomDrawerOrder = {}; // { [roomId]: string[] } -> fila fixa por ordem de entrada
 const roomTimers = {}; // { [roomId]: { phaseTimeout?: any, tickInterval?: any } }
 
 const ROUND_MS = 120000; // 120s
@@ -719,6 +720,9 @@ function normalizeClientId(clientId) {
 // acerto EXATO: mantém acento/hífen/espaço (mas ignora case e trim)
 function normalizeExact(s) {
   return String(s || "")
+    .normalize("NFC")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\u00A0/g, " ")
     .trim()
     .replace(/\s+/g, " ")
     .toLocaleLowerCase("pt-BR");
@@ -853,7 +857,11 @@ function isNearGuess(roomId, text) {
   const answer = normalizeNear(w);
 
   if (!guess || !answer) return false;
-  if (guess === answer) return false;
+  if (guess === answer) {
+    const exactGuess = normalizeExact(text);
+    const exactAnswer = normalizeExact(w);
+    return exactGuess !== exactAnswer;
+  }
 
   // se for parte grande do termo (ex: “cachorro” dentro de “cachorro-quente”)
   if (guess.length >= 3 && answer.includes(guess)) return true;
@@ -1270,12 +1278,14 @@ function touchPlayerConnection(player, socketId) {
   }
   player.lastSeenAt = Date.now();
   player.disconnectedAt = null;
+  player.disconnectAnnouncedAt = null;
 }
 
 function markPlayerDisconnected(player) {
   if (!player) return;
   player.lastSeenAt = Date.now();
   player.disconnectedAt = Date.now();
+  player.disconnectAnnouncedAt = null;
   player.socketId = null;
 }
 
@@ -1312,23 +1322,102 @@ function registerPlayerInteraction(roomId, socketId, opts = {}) {
   return player;
 }
 
+function shouldFreezeDrawerDuringRound(roomId) {
+  return roomState[roomId] === "playing" &&
+    (roomPhase[roomId] === "round" || roomPhase[roomId] === "break" || roomPhase[roomId] === "victory");
+}
+
+function ensureDrawerOrder(roomId) {
+  const players = rooms[roomId] || [];
+  const queue = Array.isArray(roomDrawerOrder[roomId]) ? roomDrawerOrder[roomId] : [];
+  const present = new Set();
+  const orderedPlayerIds = [];
+
+  for (const p of players) {
+    const cid = String(p?.clientId || "").trim();
+    if (!cid || present.has(cid)) continue;
+    present.add(cid);
+    orderedPlayerIds.push(cid);
+  }
+
+  const nextQueue = [];
+  for (const cid of queue) {
+    const key = String(cid || "").trim();
+    if (!key || !present.has(key)) continue;
+    if (!nextQueue.includes(key)) nextQueue.push(key);
+  }
+
+  for (const cid of orderedPlayerIds) {
+    if (!nextQueue.includes(cid)) nextQueue.push(cid);
+  }
+
+  roomDrawerOrder[roomId] = nextQueue;
+  return nextQueue;
+}
+
+function appendDrawerOrderClient(roomId, clientId) {
+  const cid = String(clientId || "").trim();
+  if (!cid) return;
+  const queue = ensureDrawerOrder(roomId);
+  if (!queue.includes(cid)) queue.push(cid);
+}
+
+function removeDrawerOrderClient(roomId, clientId) {
+  const cid = String(clientId || "").trim();
+  if (!cid || !Array.isArray(roomDrawerOrder[roomId])) return;
+  roomDrawerOrder[roomId] = roomDrawerOrder[roomId].filter((id) => String(id || "").trim() !== cid);
+}
+
+function syncDrawerIndexFromClient(roomId) {
+  const players = rooms[roomId] || [];
+  const drawerCid = String(roomDrawerClientId[roomId] || "").trim();
+  const idx = players.findIndex((p) => String(p?.clientId || "").trim() === drawerCid);
+  roomDrawerIndex[roomId] = idx >= 0 ? idx : 0;
+}
+
+function setDrawerFromQueueHead(roomId) {
+  const queue = ensureDrawerOrder(roomId);
+  roomDrawerClientId[roomId] = queue[0] || null;
+  syncDrawerIndexFromClient(roomId);
+  return roomDrawerClientId[roomId] || null;
+}
+
+function moveDrawerClientToQueueEnd(roomId, clientId) {
+  const queue = ensureDrawerOrder(roomId);
+  if (!queue.length) return queue;
+
+  const cid = String(clientId || "").trim();
+  if (!cid) return queue;
+
+  const idx = queue.findIndex((id) => String(id || "").trim() === cid);
+  if (idx < 0) return queue;
+
+  const [moved] = queue.splice(idx, 1);
+  if (moved) queue.push(moved);
+  return queue;
+}
+
 function ensureDrawer(roomId) {
   const players = rooms[roomId];
   if (!players || players.length === 0) return;
 
-  const drawerCid = String(roomDrawerClientId[roomId] || "").trim();
-  if (drawerCid) {
-    const foundIdx = players.findIndex((p) => String(p.clientId || "") === drawerCid);
-    if (foundIdx >= 0) {
-      roomDrawerIndex[roomId] = foundIdx;
-      return;
-    }
+  const queue = ensureDrawerOrder(roomId);
+  if (!queue.length) {
+    roomDrawerClientId[roomId] = null;
+    roomDrawerIndex[roomId] = 0;
+    return;
   }
 
-  if (roomDrawerIndex[roomId] == null || roomDrawerIndex[roomId] >= players.length) roomDrawerIndex[roomId] = 0;
+  const drawerCid = String(roomDrawerClientId[roomId] || "").trim();
+  if (drawerCid && queue.includes(drawerCid)) {
+    syncDrawerIndexFromClient(roomId);
+    return;
+  }
 
-  const chosen = players[roomDrawerIndex[roomId]] || null;
-  roomDrawerClientId[roomId] = chosen?.clientId || null;
+  // Em round ativo, nunca reatribui desenhista no meio da rodada.
+  if (shouldFreezeDrawerDuringRound(roomId) && drawerCid) return;
+
+  setDrawerFromQueueHead(roomId);
 }
 
 function currentDrawer(roomId) {
@@ -1337,18 +1426,23 @@ function currentDrawer(roomId) {
   ensureDrawer(roomId);
 
   const drawerCid = String(roomDrawerClientId[roomId] || "").trim();
-  if (drawerCid) {
-    const byClient = players.find((p) => String(p.clientId || "") === drawerCid) || null;
-    if (byClient) {
-      const idx = players.findIndex((p) => p === byClient);
-      if (idx >= 0) roomDrawerIndex[roomId] = idx;
-      return byClient;
-    }
+  if (!drawerCid) return null;
+
+  const byClient = players.find((p) => String(p.clientId || "") === drawerCid) || null;
+  if (byClient) {
+    syncDrawerIndexFromClient(roomId);
+    return byClient;
   }
 
-  const fallback = players[roomDrawerIndex[roomId]] || null;
-  roomDrawerClientId[roomId] = fallback?.clientId || null;
-  return fallback;
+  // Em round ativo, mantém desenhista "congelado" (mesmo offline),
+  // e retorna null para impedir troca em tempo real.
+  if (shouldFreezeDrawerDuringRound(roomId)) return null;
+
+  setDrawerFromQueueHead(roomId);
+
+  const nextCid = String(roomDrawerClientId[roomId] || "").trim();
+  if (!nextCid) return null;
+  return players.find((p) => String(p.clientId || "") === nextCid) || null;
 }
 
 function emitDrawer(roomId) {
@@ -1493,11 +1587,24 @@ function emitDrawerQueue(roomId) {
   const players = rooms[roomId] || [];
   if (!players.length) return;
 
-  ensureDrawer(roomId);
-  const idx = roomDrawerIndex[roomId] ?? 0;
+  const queue = ensureDrawerOrder(roomId);
+  if (!queue.length) return;
+
+  const byClientId = new Map();
+  for (const p of players) {
+    const cid = String(p?.clientId || "").trim();
+    if (!cid || byClientId.has(cid)) continue;
+    byClientId.set(cid, p);
+  }
+
+  const currentCid = String(roomDrawerClientId[roomId] || "").trim();
+  const currentIdx = queue.findIndex((cid) => String(cid || "").trim() === currentCid);
 
   const getAt = (offset) => {
-    const player = players[(idx + offset) % players.length] || null;
+    const base = currentIdx >= 0 ? currentIdx : -1;
+    const idx = ((base + offset) % queue.length + queue.length) % queue.length;
+    const cid = String(queue[idx] || "").trim();
+    const player = byClientId.get(cid) || null;
     return {
       nick: player?.nick || null,
       isAdmin: isAdminPlayer(player),
@@ -1621,25 +1728,33 @@ function advanceToNextEligibleDrawer(roomId) {
   const players = rooms[roomId] || [];
   if (players.length < 2) return;
 
+  const queue = ensureDrawerOrder(roomId);
+  if (!queue.length) {
+    roomDrawerClientId[roomId] = null;
+    roomDrawerIndex[roomId] = 0;
+    return;
+  }
+
   // evita loop infinito
-  let safety = players.length + 2;
+  let safety = queue.length + 2;
 
   while (safety-- > 0) {
-    ensureDrawer(roomId);
-    const d = currentDrawer(roomId);
-    if (!d) return;
-    const drawerKey = String(d.clientId || d.id || "").trim();
+    setDrawerFromQueueHead(roomId);
+
+    const drawerKey = String(roomDrawerClientId[roomId] || "").trim();
+    if (!drawerKey) return;
+
+    const d = players.find((p) => String(p?.clientId || "").trim() === drawerKey) || null;
 
     // se ele tá marcado pra pular, pula e limpa a marca
     if (drawerKey && shouldSkipDrawer(roomId, drawerKey)) {
       clearSkipDrawer(roomId, drawerKey);
-      emitSystemGuess(roomId, `⚠️ ${d.nick} teve a vez pulada.`);
-      roomDrawerIndex[roomId] = (roomDrawerIndex[roomId] + 1) % players.length;
-      const next = players[roomDrawerIndex[roomId]] || null;
-      roomDrawerClientId[roomId] = next?.clientId || null;
+      emitSystemGuess(roomId, `⚠️ ${d?.nick || "Jogador"} teve a vez pulada.`);
+      moveDrawerClientToQueueEnd(roomId, drawerKey);
       continue;
     }
 
+    syncDrawerIndexFromClient(roomId);
     return;
   }
 }
@@ -1655,9 +1770,18 @@ function rotateRound(roomId) {
   setRoomGuardState(roomId, ROOM_STATE.IN_ROUND);
   roomPhase[roomId] = "round";
 
-  ensureDrawer(roomId);
-  roomDrawerIndex[roomId] = (roomDrawerIndex[roomId] + 1) % players.length;
-  roomDrawerClientId[roomId] = players[roomDrawerIndex[roomId]]?.clientId || null;
+  const queue = ensureDrawerOrder(roomId);
+  if (!queue.length) {
+    roomDrawerClientId[roomId] = null;
+    roomDrawerIndex[roomId] = 0;
+    return;
+  }
+
+  const currentCid = String(roomDrawerClientId[roomId] || "").trim();
+  if (currentCid && queue.includes(currentCid)) {
+    moveDrawerClientToQueueEnd(roomId, currentCid);
+  }
+  setDrawerFromQueueHead(roomId);
 
   // aplica regra de pular a vez (por denúncias)
   advanceToNextEligibleDrawer(roomId);
@@ -1819,6 +1943,8 @@ function saveGhost(roomId, nick, score, wins, guessedRoundId = null, drawerRound
 function removeFromRoom(roomId, socketId, reason = "LEAVE", opts = {}) {
   if (!roomId || !rooms[roomId]) return;
 
+  ensureDrawer(roomId);
+
   const byClientId = String(opts.clientId || "").trim();
   const sid = String(socketId || "").trim();
 
@@ -1836,6 +1962,9 @@ function removeFromRoom(roomId, socketId, reason = "LEAVE", opts = {}) {
 
   const leavingSocketId = getPlayerSocketId(leaving) || sid || null;
   const leavingClientId = String(leaving.clientId || "").trim() || null;
+  const wasRoundPhase = roomState[roomId] === "playing" && roomPhase[roomId] === "round";
+  const wasCurrentDrawer =
+    !!leavingClientId && String(roomDrawerClientId[roomId] || "").trim() === leavingClientId;
 
   // se ele tinha votado denúncia, remove o voto
   if (roomReports[roomId]?.voters) {
@@ -1850,6 +1979,8 @@ function removeFromRoom(roomId, socketId, reason = "LEAVE", opts = {}) {
     roomId,
     beforePlayers.filter((_, idx) => idx !== leavingIdx)
   );
+  if (leavingClientId) removeDrawerOrderClient(roomId, leavingClientId);
+  else ensureDrawerOrder(roomId);
 
   if (rooms[roomId].length === before) return;
 
@@ -1858,6 +1989,7 @@ function removeFromRoom(roomId, socketId, reason = "LEAVE", opts = {}) {
     delete roomState[roomId];
     delete roomDrawerIndex[roomId];
     delete roomDrawerClientId[roomId];
+    delete roomDrawerOrder[roomId];
     delete roomRoundEndsAt[roomId];
     delete roomWord[roomId];
     delete roomHint[roomId];
@@ -1878,23 +2010,83 @@ function removeFromRoom(roomId, socketId, reason = "LEAVE", opts = {}) {
     return;
   }
 
-  ensureDrawer(roomId);
+  // Se o desenhista sair no meio do desenho, mantém o round atual com o
+  // canvas já existente até timeout/todos acertarem, sem trocar desenhista.
+  if (wasRoundPhase && wasCurrentDrawer) {
+    const drawingAlreadyStarted = roomDrawEnabled[roomId] === true;
 
-  const idx = roomDrawerIndex[roomId] ?? 0;
-  const removedIndex = leavingIdx;
+    if (drawingAlreadyStarted && leavingClientId) {
+      roomDrawerClientId[roomId] = leavingClientId;
 
-  if (removedIndex < idx) {
-    roomDrawerIndex[roomId] = Math.max(0, idx - 1);
-  } else if (removedIndex === idx) {
-    if (roomDrawerIndex[roomId] >= rooms[roomId].length) roomDrawerIndex[roomId] = 0;
+      emitRoomUpdate(roomId);
+      emitScores(roomId);
+
+      updateRoomState(roomId);
+      ensureRoomTimers(roomId);
+      emitDrawer(roomId);
+
+      if (roomState[roomId] === "playing") {
+        emitGuess(roomId, {
+          roomId,
+          nick: "Sistema",
+          text: `⚠️ ${String(leaving.nick || "desenhista")} saiu, mas a rodada continua.`,
+          kind: "warn",
+          ts: Date.now(),
+        });
+
+        if (!roomHint[roomId]) resetHintForRoom(roomId);
+        else emitHint(roomId);
+        emitRoundTimer(roomId);
+      }
+      return;
+    }
+
+    emitRoomUpdate(roomId);
+    emitScores(roomId);
+
+    updateRoomState(roomId);
+    ensureRoomTimers(roomId);
+
+    if (roomState[roomId] === "playing" && roomPhase[roomId] === "round") {
+      emitGuess(roomId, {
+        roomId,
+        nick: "Sistema",
+        text: `⚠️ ${String(leaving.nick || "desenhista")} saiu antes de começar a desenhar.`,
+        kind: "warn",
+        ts: Date.now(),
+      });
+      startBreak(roomId, "AUTO_SKIP", {
+        actorNick: leaving.nick,
+        actorIsAdmin: isAdminPlayer(leaving),
+      });
+      return;
+    }
+
+    emitDrawer(roomId);
+
+    if (roomState[roomId] === "playing") {
+      if (!roomWord[roomId]) newRoundWord(roomId);
+      else {
+        emitWordToDrawer(roomId);
+        if (!roomHint[roomId]) resetHintForRoom(roomId);
+        else emitHint(roomId);
+      }
+      emitRoundTimer(roomId);
+      if (roomPhase[roomId] === "break") emitDrawerQueue(roomId);
+    }
+    return;
   }
 
-  if (leavingClientId && String(roomDrawerClientId[roomId] || "") === leavingClientId) {
-    const next = rooms[roomId][roomDrawerIndex[roomId]] || null;
-    roomDrawerClientId[roomId] = next?.clientId || null;
+  ensureDrawer(roomId);
+  if (leavingClientId && String(roomDrawerClientId[roomId] || "").trim() === leavingClientId) {
+    if (shouldFreezeDrawerDuringRound(roomId)) {
+      roomDrawerClientId[roomId] = leavingClientId;
+      syncDrawerIndexFromClient(roomId);
+    } else {
+      setDrawerFromQueueHead(roomId);
+    }
   } else {
-    const cur = rooms[roomId][roomDrawerIndex[roomId]] || null;
-    roomDrawerClientId[roomId] = cur?.clientId || null;
+    ensureDrawer(roomId);
   }
 
   emitRoomUpdate(roomId);
@@ -1933,6 +2125,7 @@ function pruneRoom(roomId) {
       p.lastSeenAt = now;
       if (isPlayerDisconnected(p)) {
         p.disconnectedAt = null;
+        p.disconnectAnnouncedAt = null;
         changed = true;
       }
       if (!p.socketId && sid) {
@@ -1961,13 +2154,22 @@ function cleanupExpiredDisconnectedInRoom(roomId) {
   if (!expired.length) return;
 
   for (const p of expired) {
-    emitTalk(roomId, {
-      roomId,
-      nick: "Sistema",
-      text: "~" + String(p.nick || "???") + " saiu do jogo.",
-      kind: "systemBlue",
-      ts: Date.now(),
-    });
+    const alreadyAnnounced =
+      Number.isInteger(p.disconnectAnnouncedAt) &&
+      Number.isInteger(p.disconnectedAt) &&
+      Number(p.disconnectAnnouncedAt) === Number(p.disconnectedAt);
+
+    if (!alreadyAnnounced) {
+      emitTalk(roomId, {
+        roomId,
+        nick: "Sistema",
+        text: "~" + String(p.nick || "???") + " saiu do jogo.",
+        kind: "systemBlue",
+        ts: Date.now(),
+      });
+      p.disconnectAnnouncedAt = p.disconnectedAt;
+    }
+
     removeFromRoom(roomId, p.id || null, "DISCONNECT_EXPIRE", { clientId: p.clientId || null });
   }
 }
@@ -2070,6 +2272,7 @@ function clearRoomCompletely(roomId) {
   delete roomState[roomId];
   delete roomDrawerIndex[roomId];
   delete roomDrawerClientId[roomId];
+  delete roomDrawerOrder[roomId];
   delete roomRoundEndsAt[roomId];
   delete roomWord[roomId];
   delete roomHint[roomId];
@@ -2501,6 +2704,8 @@ io.on("connection", (socket) => {
           if (restoredIdx >= 0) roomDrawerIndex[rid] = restoredIdx;
         }
       }
+
+      ensureDrawerOrder(rid);
     } else {
       const connectedPlayers = getConnectedRoomPlayers(rid);
 
@@ -2534,8 +2739,10 @@ io.on("connection", (socket) => {
         afkWarnAt: null,
         afkKickAt: null,
         disconnectedAt: null,
+        disconnectAnnouncedAt: null,
       };
       rooms[rid].push(joinedPlayer);
+      appendDrawerOrderClient(rid, joinedPlayer.clientId);
 
       if (!roomDrawerClientId[rid]) {
         roomDrawerClientId[rid] = joinedPlayer.clientId;
@@ -3155,6 +3362,15 @@ io.on("connection", (socket) => {
         clearRoomCompletely(roomId);
         continue;
       }
+
+      emitTalk(roomId, {
+        roomId,
+        nick: "Sistema",
+        text: "~" + String(leaving.nick || "???") + " saiu do jogo.",
+        kind: "systemBlue",
+        ts: Date.now(),
+      });
+      leaving.disconnectAnnouncedAt = leaving.disconnectedAt;
 
       emitRoomUpdate(roomId);
       emitScores(roomId);

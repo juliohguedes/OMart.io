@@ -30,6 +30,7 @@
         <div id="menuDropdown" class="menuDropdown" hidden>
           <button id="menuLeaveBtn" type="button">Sair</button>
           <button id="menuRulesBtn" type="button">Regras</button>
+          <button id="menuMuteBtn" type="button" aria-pressed="false">Mutar sons e notificacoes</button>
           <button id="menuReportPlayerBtn" type="button">Denunciar jogador</button>
         </div>
       </div>
@@ -209,6 +210,11 @@
           </div>
         </div>
 
+        <div id="guessHintBanner" class="guessHintBanner" hidden aria-live="polite" aria-atomic="true">
+          <div id="guessHintBannerLabel" class="guessHintBanner__label">DICA</div>
+          <div id="guessHintBannerMask" class="guessHintBanner__mask"></div>
+        </div>
+
         <div id="canvasViewport">
           <div id="canvasWrap">
             <canvas id="canvas" width="700" height="420"></canvas>
@@ -285,7 +291,7 @@
         <div id="guessBox" class="chatMessages"></div>
 
         <div class="chatInputRow">
-          <input id="guessInput" type="text" placeholder="Digite sua resposta..." />
+          <input id="guessInput" type="text" placeholder="Digite sua resposta..." enterkeyhint="send" />
           <button id="guessSend">Enviar</button>
         </div>
       </section>
@@ -296,7 +302,7 @@
         <div id="talkBox" class="chatMessages"></div>
 
         <div class="chatInputRow">
-          <input id="talkInput" type="text" placeholder="Digite uma mensagem..." />
+          <input id="talkInput" type="text" placeholder="Digite uma mensagem..." enterkeyhint="send" />
           <button id="talkSend">Enviar</button>
         </div>
       </section>
@@ -576,6 +582,7 @@
       const menuDropdownEl = document.getElementById("menuDropdown");
       const menuLeaveBtnEl = document.getElementById("menuLeaveBtn");
       const menuRulesBtnEl = document.getElementById("menuRulesBtn");
+      const menuMuteBtnEl = document.getElementById("menuMuteBtn");
       const menuReportPlayerBtnEl = document.getElementById("menuReportPlayerBtn");
       const roomNameEl = document.getElementById("roomName");
       const nickNameEl = document.getElementById("nickName");
@@ -641,6 +648,9 @@
       const drawerWordEl = document.getElementById("drawerWord");
       const btnSkipTop = document.getElementById("btnSkipTop");
       const btnHintTop = document.getElementById("btnHintTop");
+      const guessHintBannerEl = document.getElementById("guessHintBanner");
+      const guessHintBannerLabelEl = document.getElementById("guessHintBannerLabel");
+      const guessHintBannerMaskEl = document.getElementById("guessHintBannerMask");
 
       const canvasStatusEl = document.getElementById("canvasStatus");
       const mainAreaEl = document.getElementById("mainArea");
@@ -758,11 +768,68 @@
       renderMyNickName();
 
       const THEME_KEY = "omart_theme";
+      const SOUND_NOTIF_MUTE_KEY = "omart_mute_sound_notif";
+      let isSoundNotifMuted = false;
+
+      function getAllSfxClips() {
+        return [
+          ...correctHitPool,
+          ...reportCancelPool,
+          ...championVictoryPool,
+          ...drawerTurnPool,
+        ];
+      }
+
+      function updateMuteMenuButtonLabel() {
+        if (!menuMuteBtnEl) return;
+        menuMuteBtnEl.textContent = isSoundNotifMuted
+          ? "Desmutar sons e notificacoes"
+          : "Mutar sons e notificacoes";
+        menuMuteBtnEl.setAttribute("aria-pressed", isSoundNotifMuted ? "true" : "false");
+      }
+
+      function applySoundNotifMuteState(nextMuted, { persist = true } = {}) {
+        isSoundNotifMuted = !!nextMuted;
+
+        for (const audio of getAllSfxClips()) {
+          if (!audio) continue;
+          audio.muted = isSoundNotifMuted;
+          if (!isSoundNotifMuted) continue;
+          try {
+            audio.pause();
+            audio.currentTime = 0;
+          } catch {}
+        }
+
+        if (presenceAudioCtx) {
+          if (isSoundNotifMuted && presenceAudioCtx.state === "running") {
+            presenceAudioCtx.suspend().catch(() => {});
+          } else if (!isSoundNotifMuted && presenceAudioCtx.state === "suspended") {
+            presenceAudioCtx.resume().catch(() => {});
+          }
+        }
+
+        if (persist) {
+          localStorage.setItem(SOUND_NOTIF_MUTE_KEY, isSoundNotifMuted ? "1" : "0");
+        }
+
+        updateMuteMenuButtonLabel();
+      }
+
+      function loadSoundNotifMutePreference() {
+        const saved = String(localStorage.getItem(SOUND_NOTIF_MUTE_KEY) || "").trim();
+        applySoundNotifMuteState(saved === "1", { persist: false });
+      }
 
       function getPresenceAudioContext() {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) return null;
-        if (!presenceAudioCtx) presenceAudioCtx = new AudioCtx();
+        if (!presenceAudioCtx) {
+          presenceAudioCtx = new AudioCtx();
+          if (isSoundNotifMuted && presenceAudioCtx.state === "running") {
+            presenceAudioCtx.suspend().catch(() => {});
+          }
+        }
         return presenceAudioCtx;
       }
 
@@ -772,6 +839,7 @@
           const audio = new Audio(CORRECT_HIT_SFX_SRC);
           audio.preload = "auto";
           audio.volume = 0.95;
+          audio.muted = isSoundNotifMuted;
           correctHitPool.push(audio);
         }
       }
@@ -782,6 +850,7 @@
           const audio = new Audio(REPORT_CANCEL_SFX_SRC);
           audio.preload = "auto";
           audio.volume = 0.95;
+          audio.muted = isSoundNotifMuted;
           reportCancelPool.push(audio);
         }
       }
@@ -792,6 +861,7 @@
           const audio = new Audio(CHAMPION_VICTORY_SFX_SRC);
           audio.preload = "auto";
           audio.volume = 1;
+          audio.muted = isSoundNotifMuted;
           championVictoryPool.push(audio);
         }
       }
@@ -802,6 +872,7 @@
           const audio = new Audio(DRAWER_TURN_SFX_SRC);
           audio.preload = "auto";
           audio.volume = 0.62;
+          audio.muted = isSoundNotifMuted;
           drawerTurnPool.push(audio);
         }
       }
@@ -859,6 +930,7 @@
       }
 
       function playCorrectSfx() {
+        if (isSoundNotifMuted) return;
         buildCorrectHitPool();
         if (!correctHitPool.length) return;
 
@@ -904,6 +976,7 @@
       }
 
       function playIntervalSfx() {
+        if (isSoundNotifMuted) return;
         const ctx = getPresenceAudioContext();
         if (!ctx || ctx.state !== "running") return;
 
@@ -927,6 +1000,7 @@
       }
 
       function playSkipTurnSfx() {
+        if (isSoundNotifMuted) return;
         const ctx = getPresenceAudioContext();
         if (!ctx || ctx.state !== "running") return;
 
@@ -950,6 +1024,7 @@
       }
 
       function playDrawerTurnSfx() {
+        if (isSoundNotifMuted) return;
         buildDrawerTurnPool();
         if (!drawerTurnPool.length) return;
 
@@ -976,6 +1051,30 @@
         }
       }
 
+      function playHintRevealSfx() {
+        if (isSoundNotifMuted) return;
+        const ctx = getPresenceAudioContext();
+        if (!ctx || ctx.state !== "running") return;
+
+        const now = ctx.currentTime + 0.002;
+        playPresenceTone(ctx, {
+          startAt: now,
+          fromFreq: 840,
+          toFreq: 1120,
+          duration: 0.12,
+          peakGain: 0.17,
+          type: "triangle",
+        });
+        playPresenceTone(ctx, {
+          startAt: now + 0.09,
+          fromFreq: 980,
+          toFreq: 1320,
+          duration: 0.13,
+          peakGain: 0.15,
+          type: "sawtooth",
+        });
+      }
+
       function tryPlayDrawerTurnSfx() {
         if (!entrou) return;
         if (!isDrawer) return;
@@ -990,6 +1089,7 @@
       }
 
       function playPlayerJoinSfx() {
+        if (isSoundNotifMuted) return;
         const ctx = getPresenceAudioContext();
         if (!ctx || ctx.state !== "running") return;
 
@@ -1013,6 +1113,7 @@
       }
 
       function playPlayerLeaveSfx() {
+        if (isSoundNotifMuted) return;
         const ctx = getPresenceAudioContext();
         if (!ctx || ctx.state !== "running") return;
 
@@ -1036,6 +1137,7 @@
       }
 
       function playPresenceBurst(kind, count = 1) {
+        if (isSoundNotifMuted) return;
         const total = Math.max(1, Math.min(3, Number(count || 0)));
         for (let i = 0; i < total; i++) {
           setTimeout(() => {
@@ -1063,6 +1165,7 @@
       }
 
       function playReportCancelSfx() {
+        if (isSoundNotifMuted) return;
         buildReportCancelPool();
         if (!reportCancelPool.length) return;
 
@@ -1090,6 +1193,7 @@
       }
 
       function playChampionVictorySfx() {
+        if (isSoundNotifMuted) return;
         buildChampionVictoryPool();
         if (!championVictoryPool.length) return;
 
@@ -1178,6 +1282,43 @@
           return;
         }
         hintInfoEl.textContent = `Dicas: ${lastHint.revealed}/${lastHint.maxReveal}`;
+      }
+
+      function countHintLettersFromMask(mask) {
+        const chars = Array.from(String(mask || ""));
+        let total = 0;
+        for (const ch of chars) {
+          if (ch === "_" || ch.toLocaleLowerCase() !== ch.toLocaleUpperCase()) total++;
+        }
+        return total;
+      }
+
+      function shouldShowGuessHintBanner() {
+        if (!lastHint || !lastHint.mask) return false;
+        if (isDrawer) return false;
+        if (guessedThisRound) return false;
+        if (isBreak || isVictory) return false;
+        if (!isRoundActiveNow()) return false;
+        return true;
+      }
+
+      function updateGuessHintBanner() {
+        if (!guessHintBannerEl || !guessHintBannerLabelEl || !guessHintBannerMaskEl) return;
+
+        if (!shouldShowGuessHintBanner()) {
+          guessHintBannerEl.hidden = true;
+          guessHintBannerLabelEl.textContent = "DICA";
+          guessHintBannerMaskEl.textContent = "";
+          return;
+        }
+
+        const mask = String(lastHint?.mask || "").trim();
+        const letters = countHintLettersFromMask(mask);
+        const lettersLabel = letters === 1 ? "LETRA" : "LETRAS";
+        guessHintBannerLabelEl.textContent =
+          letters > 0 ? `DICA (${letters} ${lettersLabel})` : "DICA";
+        guessHintBannerMaskEl.textContent = mask.toUpperCase();
+        guessHintBannerEl.hidden = false;
       }
 
       function setNoWord() { wordAreaEl.textContent = ""; }
@@ -1674,6 +1815,12 @@
         boxEl.scrollTop = boxEl.scrollHeight;
       }
 
+      function isHintGuessSystemMessage(msg) {
+        if (!msg || msg.kind !== "systemBlue") return false;
+        const text = String(msg.text || "").trim().toLowerCase();
+        return text.includes("dica (") && text.includes(":");
+      }
+
       function sendTalk() {
         const text = String(talkInputEl.value || "").trim();
         if (!text) return;
@@ -1690,6 +1837,37 @@
         guessInputEl.value = "";
         guessInputEl.focus();
       }
+
+      function isLikelyMobileClient() {
+        const ua = String(navigator.userAgent || "");
+        const coarsePointer =
+          typeof window.matchMedia === "function" &&
+          window.matchMedia("(pointer: coarse)").matches;
+        return coarsePointer || /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(ua);
+      }
+
+      function isSubmitActionKey(e) {
+        if (!e) return false;
+        const key = String(e.key || "").toLowerCase();
+        if (
+          key === "enter" ||
+          key === "go" ||
+          key === "send" ||
+          key === "done" ||
+          key === "next" ||
+          key === "return"
+        ) {
+          return true;
+        }
+
+        const code = String(e.code || "").toLowerCase();
+        if (code === "enter" || code === "numpadenter") return true;
+
+        const keyCode = Number(e.keyCode || e.which || 0);
+        return keyCode === 13;
+      }
+
+      const mobileClientLikely = isLikelyMobileClient();
 
       function renderRanking(players) {
         const list = Array.isArray(players) ? players.slice() : [];
@@ -1748,7 +1926,8 @@
         drawerQueueBoxEl.style.display = v ? "block" : "none";
       }
 
-      function toast(text) {
+      function toast(text, { force = false } = {}) {
+        if (isSoundNotifMuted && !force) return;
         const el = document.createElement("div");
         el.textContent = text;
         el.style.cssText = `
@@ -1881,9 +2060,11 @@
         applyCanvasState();
       }
 
-      function buildToolCursor(iconMarkup, { fillMarkup = "" } = {}) {
+      function buildToolCursor(iconMarkup, { fillMarkup = "", hotspotX = 12, hotspotY = 12 } = {}) {
         const safeIcon = String(iconMarkup || "");
         const safeFill = String(fillMarkup || "");
+        const hx = Math.max(0, Math.min(23, Number(hotspotX) || 0));
+        const hy = Math.max(0, Math.min(23, Number(hotspotY) || 0));
         const svg = [
           "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>",
           "<g stroke='#ffffff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round' fill='none'>",
@@ -1896,49 +2077,54 @@
           safeFill ? `<g fill='#0f172a'>${safeFill}</g>` : "",
           "</svg>",
         ].join("");
-        return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 4 4, auto`;
+        return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${hx} ${hy}, auto`;
       }
 
       const TOOL_CURSOR_MAP = {
         brush: buildToolCursor(
           "<path d='M4 20l4-1 10-10-3-3L5 16l-1 4z'/>" +
-          "<path d='M13 5l3 3'/>"
+          "<path d='M13 5l3 3'/>",
+          { hotspotX: 5, hotspotY: 19 }
         ),
         eraser: buildToolCursor(
           "<path d='M4 15l7-7 9 9-4 4H8z'/>" +
-          "<path d='M14 21h6'/>"
+          "<path d='M14 21h6'/>",
+          { hotspotX: 12, hotspotY: 12 }
         ),
         spray: buildToolCursor(
           "<rect x='8' y='8' width='8' height='11' rx='2'/>" +
           "<path d='M9 8V6h6v2'/>" +
           "<circle cx='6' cy='6' r='1.2'/>" +
           "<circle cx='4.5' cy='9' r='1'/>" +
-          "<circle cx='18.5' cy='5.5' r='1'/>"
+          "<circle cx='18.5' cy='5.5' r='1'/>",
+          { hotspotX: 12, hotspotY: 10 }
         ),
         fill: buildToolCursor(
           "<path d='M6 10l6-6 6 6-6 6z'/>" +
           "<path d='M12 16h7'/>" +
-          "<path d='M15.5 14.8s2.5 2.8 2.5 4.2a2.5 2.5 0 0 1-5 0c0-1.4 2.5-4.2 2.5-4.2z'/>"
+          "<path d='M15.5 14.8s2.5 2.8 2.5 4.2a2.5 2.5 0 0 1-5 0c0-1.4 2.5-4.2 2.5-4.2z'/>",
+          { hotspotX: 12, hotspotY: 16 }
         ),
         line: buildToolCursor(
           "<path d='M5 19L19 5'/>" +
           "<circle cx='5' cy='19' r='1.8'/>" +
-          "<circle cx='19' cy='5' r='1.8'/>"
+          "<circle cx='19' cy='5' r='1.8'/>",
+          { hotspotX: 5, hotspotY: 19 }
         ),
-        rect: buildToolCursor("<rect x='4' y='7' width='16' height='10' rx='1.5'/>"),
+        rect: buildToolCursor("<rect x='4' y='7' width='16' height='10' rx='1.5'/>", { hotspotX: 12, hotspotY: 12 }),
         rectFill: buildToolCursor(
           "<rect x='4' y='7' width='16' height='10' rx='1.5'/>",
-          { fillMarkup: "<rect x='5.6' y='8.6' width='12.8' height='6.8' rx='0.8'/>" }
+          { fillMarkup: "<rect x='5.6' y='8.6' width='12.8' height='6.8' rx='0.8'/>", hotspotX: 12, hotspotY: 12 }
         ),
-        ellipse: buildToolCursor("<ellipse cx='12' cy='12' rx='8' ry='5'/>"),
+        ellipse: buildToolCursor("<ellipse cx='12' cy='12' rx='8' ry='5'/>", { hotspotX: 12, hotspotY: 12 }),
         ellipseFill: buildToolCursor(
           "<ellipse cx='12' cy='12' rx='8' ry='5'/>",
-          { fillMarkup: "<ellipse cx='12' cy='12' rx='6.3' ry='3.4'/>" }
+          { fillMarkup: "<ellipse cx='12' cy='12' rx='6.3' ry='3.4'/>", hotspotX: 12, hotspotY: 12 }
         ),
-        circle: buildToolCursor("<circle cx='12' cy='12' r='7'/>"),
+        circle: buildToolCursor("<circle cx='12' cy='12' r='7'/>", { hotspotX: 12, hotspotY: 12 }),
         circleFill: buildToolCursor(
           "<circle cx='12' cy='12' r='7'/>",
-          { fillMarkup: "<circle cx='12' cy='12' r='5.2'/>" }
+          { fillMarkup: "<circle cx='12' cy='12' r='5.2'/>", hotspotX: 12, hotspotY: 12 }
         ),
       };
 
@@ -2359,6 +2545,85 @@
         return { x, y };
       }
 
+      function pointDistance(a, b) {
+        if (!a || !b) return 0;
+        const dx = Number(b.x || 0) - Number(a.x || 0);
+        const dy = Number(b.y || 0) - Number(a.y || 0);
+        return Math.hypot(dx, dy);
+      }
+
+      function lerpPoint(a, b, t) {
+        const tt = Math.max(0, Math.min(1, Number(t || 0)));
+        return {
+          x: Number(a.x || 0) + ((Number(b.x || 0) - Number(a.x || 0)) * tt),
+          y: Number(a.y || 0) + ((Number(b.y || 0) - Number(a.y || 0)) * tt),
+        };
+      }
+
+      function getStrokeStabilizerConfig(pointerType) {
+        const kind = String(pointerType || "").toLowerCase();
+
+        if (kind === "touch") {
+          return {
+            follow: 0.3,
+            minStep: 1.1,
+            maxJump: 58,
+            finalFollow: 0.9,
+          };
+        }
+
+        if (kind === "pen") {
+          return {
+            follow: 0.38,
+            minStep: 0.75,
+            maxJump: 48,
+            finalFollow: 0.88,
+          };
+        }
+
+        return {
+          follow: 0.62,
+          minStep: 0.4,
+          maxJump: 36,
+          finalFollow: 0.85,
+        };
+      }
+
+      function clampStrokeJump(fromPt, toPt, maxJump) {
+        if (!fromPt || !toPt) return toPt;
+        const maxLen = Math.max(1, Number(maxJump || 0));
+        const d = pointDistance(fromPt, toPt);
+        if (d <= maxLen || d <= 0.0001) return toPt;
+        return lerpPoint(fromPt, toPt, maxLen / d);
+      }
+
+      function getPointerSamples(e) {
+        if (!e) return [];
+        if (typeof e.getCoalescedEvents === "function") {
+          const coalesced = e.getCoalescedEvents();
+          if (coalesced && coalesced.length) return Array.from(coalesced);
+        }
+        return [e];
+      }
+
+      let drawScrollLockActive = false;
+
+      function setDrawScrollLock(active) {
+        if (!mobileClientLikely) return;
+        const next = !!active;
+        if (drawScrollLockActive === next) return;
+        drawScrollLockActive = next;
+        document.body.classList.toggle("draw-scroll-lock", next);
+      }
+
+      function preventTouchScrollWhileDrawing(e) {
+        if (!drawScrollLockActive) return;
+        if (e && typeof e.preventDefault === "function") e.preventDefault();
+      }
+
+      window.addEventListener("touchmove", preventTouchScrollWhileDrawing, { passive: false, capture: true });
+      window.addEventListener("touchstart", preventTouchScrollWhileDrawing, { passive: false, capture: true });
+
       function updateCanvasWrapFit() {
         if (!canvasViewportEl || !canvasWrapEl) return;
 
@@ -2584,9 +2849,11 @@
         const canDrawNow = canDrawHere();
         canvas.dataset.canDraw = canDrawNow ? "1" : "0";
         canvas.style.pointerEvents = canDrawNow ? "auto" : "none";
+        if (!canDrawNow) setDrawScrollLock(false);
         applyCanvasToolCursor(canDrawNow);
         updateTurnOverlay();
         updateDrawerTopBar();
+        updateGuessHintBanner();
 
         if (isDrawer && isRoundActive && !drawEnabled && !isBreak && !isVictory) {
           showDrawPrompt(lastSecretWord);
@@ -2595,10 +2862,12 @@
         }
 
         applyReportButtonState();
+        const hintBannerVisible = !!(guessHintBannerEl && !guessHintBannerEl.hidden);
         const compactCanvasMode =
           toolsEnabled ||
           drawControlsEl.style.display !== "none" ||
-          !drawerTopBarEl.hidden;
+          !drawerTopBarEl.hidden ||
+          hintBannerVisible;
 
         if (!compactCanvasMode) {
           lastCanvasFitLayoutKey = "";
@@ -2610,6 +2879,7 @@
           toolsEnabled ? 1 : 0,
           drawControlsEl.style.display === "none" ? 0 : 1,
           drawerTopBarEl.hidden ? 0 : 1,
+          hintBannerVisible ? 1 : 0,
           isRoundActive ? 1 : 0,
           isDrawer ? 1 : 0,
           drawEnabled ? 1 : 0,
@@ -2643,6 +2913,8 @@
       let pointerDown = false;
       let startPt = null;
       let lastPt = null;
+      let stabilizedPt = null;
+      let strokePointerType = "";
       const DRAW_BATCH_INTERVAL_MS = 33;
       const DRAW_BATCH_MAX = 24;
       let pendingDrawActions = [];
@@ -2672,6 +2944,29 @@
       }
 
       function previewShape(shape, opts) { clearOverlay(); drawShape(octx, shape, opts); }
+
+      function emitStabilizedStroke(rawPt, opts, pointerType, force = false) {
+        if (!rawPt) return false;
+
+        if (!stabilizedPt) stabilizedPt = rawPt;
+        if (!lastPt) lastPt = stabilizedPt;
+
+        const cfg = getStrokeStabilizerConfig(pointerType || strokePointerType);
+        const clampedRaw = clampStrokeJump(stabilizedPt, rawPt, cfg.maxJump);
+        const follow = force ? cfg.finalFollow : cfg.follow;
+        const nextPt = lerpPoint(stabilizedPt, clampedRaw, follow);
+        stabilizedPt = nextPt;
+
+        const segLen = pointDistance(lastPt, nextPt);
+        const minLen = force ? 0.05 : cfg.minStep;
+        if (segLen < minLen) return false;
+
+        const action = { type: "stroke", from: lastPt, to: nextPt, opts };
+        applyActionLocal(action);
+        sendAction(action);
+        lastPt = nextPt;
+        return true;
+      }
 
       function flushPendingDrawActions() {
         if (!pendingDrawActions.length) return;
@@ -2719,6 +3014,7 @@
         scheduleDrawBatchFlush();
       }
 
+      loadSoundNotifMutePreference();
       loadThemePreference();
 
       initPalette();
@@ -2928,6 +3224,11 @@
         openRulesModal();
       });
 
+      menuMuteBtnEl.addEventListener("click", () => {
+        applySoundNotifMuteState(!isSoundNotifMuted);
+        closeMenuDropdown();
+      });
+
       menuReportPlayerBtnEl.addEventListener("click", () => {
         closeMenuDropdown();
         openReportPlayerModal();
@@ -3028,6 +3329,7 @@
           hasAnyCorrect = false;
           hintAvailable = true;
           guessedThisRound = false;
+          lastHint = null;
         }
 
         if (ph !== "round") {
@@ -3265,8 +3567,13 @@
 
       socket.on("guessMessage", (msg) => {
         if (!msg || msg.roomId !== roomId) return;
-        addLine(guessBoxEl, msg);
+        const isHintMsg = isHintGuessSystemMessage(msg);
+        if (!isHintMsg) addLine(guessBoxEl, msg);
         const isReplay = msg.replay === true;
+
+        if (!isReplay && isHintMsg) {
+          playHintRevealSfx();
+        }
 
         if (!isReplay && msg.kind === "systemBlue" && typeof msg.text === "string") {
           const lower = msg.text.toLowerCase();
@@ -3441,6 +3748,7 @@
 
       canvas.addEventListener("pointerdown", (e) => {
         if (canvas.dataset.canDraw !== "1") return;
+        e.preventDefault();
 
         const pt = getCanvasPoint(e);
 
@@ -3453,26 +3761,31 @@
         }
 
         pointerDown = true;
-        canvas.setPointerCapture(e.pointerId);
+        setDrawScrollLock(true);
+        try {
+          canvas.setPointerCapture(e.pointerId);
+        } catch {}
 
+        strokePointerType = String(e.pointerType || "").toLowerCase();
         startPt = pt;
         lastPt = pt;
+        stabilizedPt = pt;
       });
 
       canvas.addEventListener("pointermove", (e) => {
         if (!pointerDown) return;
         if (canvas.dataset.canDraw !== "1") return;
-
-        const pt = getCanvasPoint(e);
+        e.preventDefault();
+        const samples = getPointerSamples(e);
+        if (!samples.length) return;
 
         if (tool === "brush" || tool === "eraser") {
           const opts = currentDrawOpts();
-          const action = { type: "stroke", from: lastPt, to: pt, opts };
-
-          applyActionLocal(action);
-          sendAction(action);
-
-          lastPt = pt;
+          for (const sample of samples) {
+            const pt = getCanvasPoint(sample);
+            const samplePointerType = String(sample?.pointerType || strokePointerType || "").toLowerCase();
+            emitStabilizedStroke(pt, opts, samplePointerType, false);
+          }
           return;
         }
 
@@ -3481,22 +3794,24 @@
 
           const density = 24;
           const radius = Math.max(2, size * 2);
+          for (const sample of samples) {
+            const pt = getCanvasPoint(sample);
+            const points = [];
+            for (let i = 0; i < density; i++) {
+              const ang = Math.random() * Math.PI * 2;
+              const r = Math.random() * radius;
+              points.push({ x: pt.x + Math.cos(ang) * r, y: pt.y + Math.sin(ang) * r });
+            }
 
-          const points = [];
-          for (let i = 0; i < density; i++) {
-            const ang = Math.random() * Math.PI * 2;
-            const r = Math.random() * radius;
-            points.push({ x: pt.x + Math.cos(ang) * r, y: pt.y + Math.sin(ang) * r });
+            const action = { type: "spray", points, opts };
+            applyActionLocal(action);
+            sendAction(action);
+            lastPt = pt;
           }
-
-          const action = { type: "spray", points, opts };
-          applyActionLocal(action);
-          sendAction(action);
-
-          lastPt = pt;
           return;
         }
 
+        const pt = getCanvasPoint(samples[samples.length - 1]);
         const opts = currentDrawOpts();
         let kind = tool;
 
@@ -3520,10 +3835,35 @@
       function endPointer(e) {
         if (!pointerDown) return;
         pointerDown = false;
+        setDrawScrollLock(false);
+        if (e && typeof e.preventDefault === "function") e.preventDefault();
+        if (e && typeof e.pointerId === "number") {
+          try {
+            if (typeof canvas.hasPointerCapture === "function" && canvas.hasPointerCapture(e.pointerId)) {
+              canvas.releasePointerCapture(e.pointerId);
+            }
+          } catch {}
+        }
 
-        if (canvas.dataset.canDraw !== "1") { clearOverlay(); return; }
+        if (canvas.dataset.canDraw !== "1") {
+          clearOverlay();
+          startPt = null;
+          lastPt = null;
+          stabilizedPt = null;
+          strokePointerType = "";
+          return;
+        }
 
-        const pt = getCanvasPoint(e);
+        const endSamples = getPointerSamples(e);
+        let pt = lastPt || startPt || { x: 0, y: 0 };
+        if (endSamples.length) {
+          pt = getCanvasPoint(endSamples[endSamples.length - 1]);
+        }
+
+        if ((tool === "brush" || tool === "eraser") && lastPt) {
+          const opts = currentDrawOpts();
+          emitStabilizedStroke(pt, opts, strokePointerType, true);
+        }
 
         if (tool !== "brush" && tool !== "eraser" && tool !== "spray" && tool !== "fill") {
           const opts = currentDrawOpts();
@@ -3552,11 +3892,16 @@
 
         startPt = null;
         lastPt = null;
+        stabilizedPt = null;
+        strokePointerType = "";
       }
 
       canvas.addEventListener("pointerup", endPointer);
       canvas.addEventListener("pointercancel", endPointer);
-      canvas.addEventListener("pointerleave", endPointer);
+      canvas.addEventListener("lostpointercapture", () => {
+        if (!pointerDown) return;
+        endPointer();
+      });
 
       btnLobby.addEventListener("click", confirmarSaidaParaLobby);
       document.addEventListener("keydown", (e) => {
@@ -3588,10 +3933,24 @@
       btnHintTop.addEventListener("click", requestHint);
 
       talkSendEl.addEventListener("click", sendTalk);
-      talkInputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") sendTalk(); });
+      talkInputEl.addEventListener("keydown", (e) => {
+        if (!isSubmitActionKey(e)) return;
+        if (mobileClientLikely) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        sendTalk();
+      });
 
       guessSendEl.addEventListener("click", sendGuess);
-      guessInputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") sendGuess(); });
+      guessInputEl.addEventListener("keydown", (e) => {
+        if (!isSubmitActionKey(e)) return;
+        if (mobileClientLikely) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        sendGuess();
+      });
 
       socket.on("joined", ({ roomId: rid, players, youIsAdmin }) => {
         if (rid !== roomId) return;
