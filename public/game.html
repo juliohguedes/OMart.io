@@ -2949,6 +2949,7 @@
       let lastPt = null;
       let stabilizedPt = null;
       let strokePointerType = "";
+      let strokeSegmentEmitted = false;
       const DRAW_BATCH_INTERVAL_MS = 33;
       const DRAW_BATCH_MAX = 24;
       let pendingDrawActions = [];
@@ -2998,7 +2999,19 @@
         const action = { type: "stroke", from: lastPt, to: nextPt, opts };
         applyActionLocal(action);
         sendAction(action);
+        strokeSegmentEmitted = true;
         lastPt = nextPt;
+        return true;
+      }
+
+      function emitTapDotStroke(pt, opts) {
+        if (!pt || !opts) return false;
+        const delta = Math.max(0.12, (Number(opts.size) || 1) * 0.04);
+        const to = { x: pt.x + delta, y: pt.y + delta };
+        const action = { type: "stroke", from: pt, to, opts };
+        applyActionLocal(action);
+        sendAction(action);
+        strokeSegmentEmitted = true;
         return true;
       }
 
@@ -3810,6 +3823,7 @@
         startPt = pt;
         lastPt = pt;
         stabilizedPt = pt;
+        strokeSegmentEmitted = false;
       });
 
       canvas.addEventListener("pointermove", (e) => {
@@ -3891,6 +3905,7 @@
           lastPt = null;
           stabilizedPt = null;
           strokePointerType = "";
+          strokeSegmentEmitted = false;
           return;
         }
 
@@ -3903,6 +3918,9 @@
         if ((tool === "brush" || tool === "eraser") && lastPt) {
           const opts = currentDrawOpts();
           emitStabilizedStroke(pt, opts, strokePointerType, true);
+          if (!strokeSegmentEmitted) {
+            emitTapDotStroke(pt, opts);
+          }
         }
 
         if (tool !== "brush" && tool !== "eraser" && tool !== "spray" && tool !== "fill") {
@@ -3934,6 +3952,7 @@
         lastPt = null;
         stabilizedPt = null;
         strokePointerType = "";
+        strokeSegmentEmitted = false;
       }
 
       canvas.addEventListener("pointerup", endPointer);

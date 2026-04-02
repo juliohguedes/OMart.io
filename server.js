@@ -7,10 +7,15 @@ const fs = require("fs");
 const path = require("path");
 const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0"; // Railway/containers: expor em todas as interfaces
+const SOCKET_PING_INTERVAL_MS = 25000;
+const SOCKET_PING_TIMEOUT_MS = 6 * 60 * 1000; // mobile em segundo plano nao cai rapido
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  pingInterval: SOCKET_PING_INTERVAL_MS,
+  pingTimeout: SOCKET_PING_TIMEOUT_MS,
+});
 
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -34,6 +39,7 @@ const ROUND_MS = 120000; // 120s
 const BREAK_MS = 15000; // 15s
 const VICTORY_MS = 30000; // 30s
 const RECONNECT_GRACE_MS = 30000; // 30s
+const DISCONNECT_ANNOUNCE_DELAY_MS = 5000; // evita "saiu" em refresh/reconexao rapida
 const RECONNECT_CLEANUP_MS = 2000; // 2s
 const AFK_IDLE_MS = 5 * 60 * 1000; // 5 min without interaction
 const AFK_CONFIRM_MS = 30 * 1000; // 30s to confirm "still here"
@@ -1254,6 +1260,11 @@ function disconnectedBeyondGrace(player, now = Date.now()) {
   return now - Number(player.disconnectedAt) > RECONNECT_GRACE_MS;
 }
 
+function disconnectedBeyondAnnounceDelay(player, now = Date.now()) {
+  if (!Number.isInteger(player?.disconnectedAt)) return false;
+  return now - Number(player.disconnectedAt) > DISCONNECT_ANNOUNCE_DELAY_MS;
+}
+
 function findPlayerBySocket(roomId, socketId) {
   const sid = String(socketId || "").trim();
   if (!sid) return null;
@@ -2150,26 +2161,30 @@ function cleanupExpiredDisconnectedInRoom(roomId) {
   if (!rooms[roomId]) return;
 
   const now = Date.now();
-  const expired = (rooms[roomId] || []).filter((p) => disconnectedBeyondGrace(p, now));
-  if (!expired.length) return;
+  const players = rooms[roomId] || [];
 
-  for (const p of expired) {
+  for (const p of players) {
     const alreadyAnnounced =
       Number.isInteger(p.disconnectAnnouncedAt) &&
       Number.isInteger(p.disconnectedAt) &&
       Number(p.disconnectAnnouncedAt) === Number(p.disconnectedAt);
+    if (alreadyAnnounced) continue;
+    if (!disconnectedBeyondAnnounceDelay(p, now)) continue;
 
-    if (!alreadyAnnounced) {
-      emitTalk(roomId, {
-        roomId,
-        nick: "Sistema",
-        text: "~" + String(p.nick || "???") + " saiu do jogo.",
-        kind: "systemBlue",
-        ts: Date.now(),
-      });
-      p.disconnectAnnouncedAt = p.disconnectedAt;
-    }
+    emitTalk(roomId, {
+      roomId,
+      nick: "Sistema",
+      text: "~" + String(p.nick || "???") + " saiu do jogo.",
+      kind: "systemBlue",
+      ts: Date.now(),
+    });
+    p.disconnectAnnouncedAt = p.disconnectedAt;
+  }
 
+  const expired = players.filter((p) => disconnectedBeyondGrace(p, now));
+  if (!expired.length) return;
+
+  for (const p of expired) {
     removeFromRoom(roomId, p.id || null, "DISCONNECT_EXPIRE", { clientId: p.clientId || null });
   }
 }
@@ -3363,14 +3378,9 @@ io.on("connection", (socket) => {
         continue;
       }
 
-      emitTalk(roomId, {
-        roomId,
-        nick: "Sistema",
-        text: "~" + String(leaving.nick || "???") + " saiu do jogo.",
-        kind: "systemBlue",
-        ts: Date.now(),
-      });
-      leaving.disconnectAnnouncedAt = leaving.disconnectedAt;
+      // Nao anuncia saida no disconnect imediato: refresh/reconexao rapida
+      // nao deve poluir o chat. O aviso e emitido apenas no cleanup apos grace.
+      leaving.disconnectAnnouncedAt = null;
 
       emitRoomUpdate(roomId);
       emitScores(roomId);

@@ -2109,7 +2109,7 @@ body.mobile-layout-enabled #topBarLeft {
 }
 
 body.mobile-layout-enabled #topTitle {
-  font-size: calc(52px * var(--ui-scale));
+  font-size: calc(46px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #topBarRight {
@@ -2120,23 +2120,23 @@ body.mobile-layout-enabled #topBarRight {
 
 body.mobile-layout-enabled #btnReport,
 body.mobile-layout-enabled #btnWarnEmote {
-  width: calc(148px * var(--ui-scale));
-  height: calc(58px * var(--ui-scale));
+  width: calc(134px * var(--ui-scale));
+  height: calc(52px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #themeToggle {
-  width: calc(58px * var(--ui-scale));
-  height: calc(58px * var(--ui-scale));
+  width: calc(52px * var(--ui-scale));
+  height: calc(52px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #timerBox {
   min-width: 0;
   flex: 1 1 auto;
-  height: calc(58px * var(--ui-scale));
+  height: calc(52px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #phaseLabel {
-  font-size: calc(40px * var(--ui-scale));
+  font-size: calc(35px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #menuDropdown {
@@ -2145,43 +2145,97 @@ body.mobile-layout-enabled #menuDropdown {
 }
 
 body.mobile-layout-enabled #limite #gameRoot {
-  padding: calc(12px * var(--ui-scale));
-  grid-template-rows: auto minmax(0, 1fr) minmax(calc(420px * var(--ui-scale)), 42%);
-  gap: calc(10px * var(--ui-scale));
+  padding: calc(10px * var(--ui-scale));
+  grid-template-rows: auto minmax(0, 1fr) minmax(calc(300px * var(--ui-scale)), 30%);
+  gap: calc(8px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #limite #mainArea {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) minmax(calc(260px * var(--ui-scale)), 32%);
+  grid-template-rows: minmax(0, 1fr) minmax(calc(200px * var(--ui-scale)), 27%);
 }
 
 body.mobile-layout-enabled #limite #mainArea.mainArea--with-tools {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) minmax(calc(260px * var(--ui-scale)), 32%);
+  grid-template-rows: auto minmax(0, 1fr) minmax(calc(200px * var(--ui-scale)), 27%);
 }
 
 body.mobile-layout-enabled #toolsPanel {
-  max-height: calc(360px * var(--ui-scale));
+  max-height: calc(250px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #toolsPanelTitle {
+  padding: calc(8px * var(--ui-scale));
+  font-size: calc(20px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .toolsBody {
+  padding: calc(8px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .toolGrid {
+  gap: calc(6px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .toolBtn {
+  min-height: calc(58px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .toolBtnIcon {
+  width: calc(30px * var(--ui-scale));
+  height: calc(30px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .toolRangeCard,
+body.mobile-layout-enabled .toolColorCard,
+body.mobile-layout-enabled .toolTextureCard,
+body.mobile-layout-enabled .paletteWrap,
+body.mobile-layout-enabled .toolsActions {
+  padding: calc(8px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #canvasViewport {
-  padding: 0 calc(8px * var(--ui-scale)) calc(8px * var(--ui-scale));
+  padding: 0 calc(4px * var(--ui-scale)) calc(4px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #canvasWrap {
-  width: min(100%, calc(1450px * var(--ui-scale)));
+  width: min(100%, calc(1700px * var(--ui-scale)));
 }
 
 body.mobile-layout-enabled #drawerTopBar {
-  min-height: calc(92px * var(--ui-scale));
+  min-height: calc(62px * var(--ui-scale));
+  padding: calc(2px * var(--ui-scale)) calc(8px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .drawerTopBar__small {
+  font-size: calc(30px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .drawerTopBar__word {
+  font-size: calc(44px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .drawerTopBar__btn {
+  min-width: calc(98px * var(--ui-scale));
+  height: calc(30px * var(--ui-scale));
+  font-size: calc(15px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #guessHintBanner {
-  min-height: calc(74px * var(--ui-scale));
+  min-height: calc(56px * var(--ui-scale));
+  padding: calc(2px * var(--ui-scale)) calc(8px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .guessHintBanner__label {
+  font-size: calc(18px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .guessHintBanner__mask {
+  font-size: calc(34px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #rankingPanel {
-  padding: calc(10px * var(--ui-scale));
+  padding: calc(8px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled .rankingHeader h3 {
@@ -2202,25 +2256,25 @@ body.mobile-layout-enabled .player-points {
 
 body.mobile-layout-enabled #limite #bottomArea {
   grid-template-columns: 1fr;
-  gap: calc(10px * var(--ui-scale));
+  gap: calc(8px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled .chatPanel {
-  padding: calc(12px * var(--ui-scale));
+  padding: calc(8px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled .chatPanel h3 {
-  font-size: calc(46px * var(--ui-scale));
+  font-size: calc(38px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #guessBox > div,
 body.mobile-layout-enabled #talkBox > div {
-  font-size: calc(28px * var(--ui-scale));
+  font-size: calc(23px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #guessInput,
 body.mobile-layout-enabled #talkInput {
-  height: calc(72px * var(--ui-scale));
-  font-size: calc(28px * var(--ui-scale));
-  padding: 0 calc(20px * var(--ui-scale));
+  height: calc(60px * var(--ui-scale));
+  font-size: calc(24px * var(--ui-scale));
+  padding: 0 calc(16px * var(--ui-scale));
 }
