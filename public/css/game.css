@@ -218,6 +218,12 @@ body::before {
   min-height: 0;
 }
 
+body.mobile-keyboard-open #appViewport {
+  align-items: flex-start;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 #limite {
   position: relative;
   width: calc(var(--board-w) * var(--board-scale));
@@ -702,6 +708,12 @@ body.theme-night #themeToggle {
   font-size: calc(15px * var(--ui-scale));
   font-weight: 900;
   cursor: pointer;
+}
+
+#btnUndo,
+#btnRedo {
+  font-size: calc(22px * var(--ui-scale));
+  line-height: 1;
 }
 
 #palette {
@@ -1494,6 +1506,33 @@ body.theme-night #themeToggle {
   text-overflow: ellipsis;
 }
 
+.player-nameBtn {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.player-nameBtn:hover {
+  filter: brightness(1.05);
+}
+
+.player-nameBtn:focus-visible {
+  outline: calc(2px * var(--ui-scale)) solid color-mix(in srgb, #89c3ff 64%, transparent);
+  outline-offset: calc(2px * var(--ui-scale));
+  border-radius: calc(4px * var(--ui-scale));
+}
+
+.player-nameBtn:disabled {
+  opacity: 0.62;
+  cursor: wait;
+}
+
 .adminNick {
   display: inline-flex;
   align-items: center;
@@ -1529,6 +1568,40 @@ body.theme-night #themeToggle {
     color: transparent;
     -webkit-text-fill-color: transparent;
     -webkit-text-stroke: calc(1px * var(--ui-scale)) var(--admin-stroke);
+  }
+}
+
+.adminNick--tone-koyah .adminNick__text {
+  color: #ff6cc7;
+  text-shadow:
+    0 calc(1px * var(--ui-scale)) 0 rgba(255, 234, 249, 0.85),
+    0 calc(2px * var(--ui-scale)) calc(6px * var(--ui-scale)) rgba(255, 76, 178, 0.36);
+}
+
+.adminNick--tone-miau .adminNick__text {
+  color: #63b3ff;
+  text-shadow:
+    0 calc(1px * var(--ui-scale)) 0 rgba(233, 246, 255, 0.85),
+    0 calc(2px * var(--ui-scale)) calc(6px * var(--ui-scale)) rgba(58, 130, 255, 0.34);
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .adminNick--tone-koyah .adminNick__text {
+    background: linear-gradient(135deg, #fff4fb 0%, #ffb4ea 24%, #ff6cc7 52%, #d9369a 76%, #851e63 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    -webkit-text-stroke: calc(1px * var(--ui-scale)) rgba(91, 12, 61, 0.88);
+  }
+
+  .adminNick--tone-miau .adminNick__text {
+    background: linear-gradient(135deg, #f4faff 0%, #b9e1ff 24%, #63b3ff 52%, #2c78eb 76%, #133b90 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    -webkit-text-stroke: calc(1px * var(--ui-scale)) rgba(8, 42, 110, 0.9);
   }
 }
 
@@ -1686,6 +1759,44 @@ body.theme-night #themeToggle {
     color: transparent;
     -webkit-text-fill-color: transparent;
     -webkit-text-stroke: calc(1px * var(--ui-scale)) rgba(14, 58, 142, 0.78);
+  }
+}
+
+.player--guessed .player-name .adminNick.adminNick--tone-koyah .adminNick__text,
+.player--drawer .player-name .adminNick.adminNick--tone-koyah .adminNick__text {
+  color: #ff6cc7;
+  text-shadow:
+    0 calc(1px * var(--ui-scale)) 0 rgba(255, 234, 249, 0.85),
+    0 calc(2px * var(--ui-scale)) calc(6px * var(--ui-scale)) rgba(255, 76, 178, 0.36);
+}
+
+.player--guessed .player-name .adminNick.adminNick--tone-miau .adminNick__text,
+.player--drawer .player-name .adminNick.adminNick--tone-miau .adminNick__text {
+  color: #63b3ff;
+  text-shadow:
+    0 calc(1px * var(--ui-scale)) 0 rgba(233, 246, 255, 0.85),
+    0 calc(2px * var(--ui-scale)) calc(6px * var(--ui-scale)) rgba(58, 130, 255, 0.34);
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .player--guessed .player-name .adminNick.adminNick--tone-koyah .adminNick__text,
+  .player--drawer .player-name .adminNick.adminNick--tone-koyah .adminNick__text {
+    background: linear-gradient(135deg, #fff4fb 0%, #ffb4ea 24%, #ff6cc7 52%, #d9369a 76%, #851e63 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    -webkit-text-stroke: calc(1px * var(--ui-scale)) rgba(91, 12, 61, 0.88);
+  }
+
+  .player--guessed .player-name .adminNick.adminNick--tone-miau .adminNick__text,
+  .player--drawer .player-name .adminNick.adminNick--tone-miau .adminNick__text {
+    background: linear-gradient(135deg, #f4faff 0%, #b9e1ff 24%, #63b3ff 52%, #2c78eb 76%, #133b90 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    -webkit-text-stroke: calc(1px * var(--ui-scale)) rgba(8, 42, 110, 0.9);
   }
 }
 
@@ -1878,11 +1989,20 @@ body.theme-night #themeToggle {
   gap: calc(10px * var(--ui-scale));
 }
 
+.reportConfirmActions--stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 #reportConfirmSubmit,
 #reportConfirmCancel,
 #rulesCloseBtn,
 #reportPlayerSubmitBtn,
 #reportPlayerCancelBtn,
+#adminActionMuteBtn,
+#adminActionKickBtn,
+#adminActionCancelDrawingBtn,
+#adminActionCloseBtn,
 #afkStillHereBtn {
   min-width: calc(138px * var(--ui-scale));
   height: calc(44px * var(--ui-scale));
@@ -1903,12 +2023,16 @@ body.theme-night #themeToggle {
 
 #reportConfirmCancel,
 #rulesCloseBtn,
-#reportPlayerCancelBtn {
+#reportPlayerCancelBtn,
+#adminActionCloseBtn {
   background: rgba(20, 34, 56, 0.96);
   color: #dbe8ff;
 }
 
-#reportPlayerSubmitBtn {
+#reportPlayerSubmitBtn,
+#adminActionMuteBtn,
+#adminActionKickBtn,
+#adminActionCancelDrawingBtn {
   background: linear-gradient(180deg, #ffd55c 0%, #e2ac1c 100%);
   color: #261a00;
 }
@@ -1932,6 +2056,10 @@ body.theme-night #themeToggle {
 #rulesCloseBtn:disabled,
 #reportPlayerSubmitBtn:disabled,
 #reportPlayerCancelBtn:disabled,
+#adminActionMuteBtn:disabled,
+#adminActionKickBtn:disabled,
+#adminActionCancelDrawingBtn:disabled,
+#adminActionCloseBtn:disabled,
 #afkStillHereBtn:disabled {
   opacity: 0.58;
   cursor: wait;
@@ -2161,7 +2289,7 @@ body.mobile-layout-enabled #limite #mainArea.mainArea--with-tools {
 }
 
 body.mobile-layout-enabled #toolsPanel {
-  max-height: calc(250px * var(--ui-scale));
+  max-height: calc(200px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #toolsPanelTitle {
@@ -2174,16 +2302,18 @@ body.mobile-layout-enabled .toolsBody {
 }
 
 body.mobile-layout-enabled .toolGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: calc(6px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled .toolBtn {
-  min-height: calc(58px * var(--ui-scale));
+  min-height: calc(44px * var(--ui-scale));
+  border-radius: calc(9px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled .toolBtnIcon {
-  width: calc(30px * var(--ui-scale));
-  height: calc(30px * var(--ui-scale));
+  width: calc(22px * var(--ui-scale));
+  height: calc(22px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled .toolRangeCard,
@@ -2191,7 +2321,44 @@ body.mobile-layout-enabled .toolColorCard,
 body.mobile-layout-enabled .toolTextureCard,
 body.mobile-layout-enabled .paletteWrap,
 body.mobile-layout-enabled .toolsActions {
-  padding: calc(8px * var(--ui-scale));
+  padding: calc(6px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .toolRangeCard b,
+body.mobile-layout-enabled .toolColorCard b,
+body.mobile-layout-enabled .toolTextureCard b,
+body.mobile-layout-enabled .paletteWrap b {
+  margin-bottom: calc(4px * var(--ui-scale));
+  font-size: calc(14px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .toolRangeVal {
+  margin-top: calc(3px * var(--ui-scale));
+  font-size: calc(16px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #colorPicker {
+  min-height: calc(34px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #brushTexture {
+  min-height: calc(30px * var(--ui-scale));
+  font-size: calc(13px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled .toolsActions button {
+  min-height: calc(27px * var(--ui-scale));
+  font-size: calc(13px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #btnUndo,
+body.mobile-layout-enabled #btnRedo {
+  font-size: calc(18px * var(--ui-scale));
+}
+
+body.mobile-layout-enabled #palette {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: calc(4px * var(--ui-scale));
 }
 
 body.mobile-layout-enabled #canvasViewport {

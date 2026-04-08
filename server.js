@@ -583,6 +583,7 @@ function buildRankPayload(roomId) {
     guessed: isRoundPhase && Number(p.guessedRoundId) === roundId,
     isDrawer: isRoundPhase && !!drawerCid && String(p.clientId || "") === String(drawerCid),
     isAdmin: isAdminPlayer(p),
+    mutedTalkByAdmin: p.mutedTalkByAdmin === true,
   }));
 
   payload.sort((a, b) => b.score - a.score || b.wins - a.wins || a.nick.localeCompare(b.nick));
@@ -690,25 +691,67 @@ function normNick(nick) {
   return String(nick || "").trim().toLowerCase();
 }
 
-const ADMIN_NICK = String(process.env.ADMIN_NICK || "Miau-Sensei").trim();
-const ADMIN_KEY = String(process.env.ADMIN_KEY || "19082005").trim();
-const ADMIN_NICK_NORM = normNick(ADMIN_NICK);
+const RESERVED_NICK_RULES = [
+  {
+    nick: String(process.env.ADMIN_NICK || "Miau-Sensei").trim(),
+    key: String(process.env.ADMIN_KEY || "19082005").trim(),
+    style: "admin",
+  },
+  {
+    nick: String(process.env.KOYAH_NICK || "Koyah_").trim(),
+    key: String(process.env.KOYAH_KEY || "23082007").trim(),
+    style: "koyah",
+  },
+  {
+    nick: String(process.env.MIAU_NICK || "Miau_").trim(),
+    key: String(process.env.MIAU_KEY || "19082005").trim(),
+    style: "miau",
+  },
+];
 
-function isReservedAdminNick(nick) {
-  if (!ADMIN_NICK_NORM) return false;
-  return normNick(nick) === ADMIN_NICK_NORM;
+const RESERVED_NICK_RULES_BY_NORM = (() => {
+  const map = new Map();
+  for (const rule of RESERVED_NICK_RULES) {
+    const nick = String(rule && rule.nick ? rule.nick : "").trim();
+    if (!nick) continue;
+    const nn = normNick(nick);
+    if (!nn || map.has(nn)) continue;
+    map.set(nn, {
+      nick,
+      key: String(rule && rule.key ? rule.key : "").trim(),
+      style: String(rule && rule.style ? rule.style : "admin").trim() || "admin",
+    });
+  }
+  return map;
+})();
+
+function getReservedNickRule(nick) {
+  const nn = normNick(nick);
+  if (!nn) return null;
+  return RESERVED_NICK_RULES_BY_NORM.get(nn) || null;
 }
 
-function hasValidAdminKey(adminKey) {
-  if (!ADMIN_NICK_NORM) return true;
-  if (!ADMIN_KEY) return false;
-  return String(adminKey || "").trim() === ADMIN_KEY;
+function isReservedAdminNick(nick) {
+  return !!getReservedNickRule(nick);
+}
+
+function hasValidAdminKey(nick, adminKey) {
+  const rule = getReservedNickRule(nick);
+  if (!rule) return true;
+  if (!rule.key) return false;
+  return String(adminKey || "").trim() === rule.key;
 }
 
 function isAdminPlayer(player) {
   if (!player) return false;
   if (player.isAdmin === true) return true;
   return isReservedAdminNick(player.nick);
+}
+
+function getAdminActor(roomId, socketId) {
+  const actor = findPlayerBySocket(roomId, socketId);
+  if (!actor) return null;
+  return isAdminPlayer(actor) ? actor : null;
 }
 
 function emitNickBlocked(socket, roomId, nick, reason = "ADMIN_KEY_REQUIRED") {
@@ -979,17 +1022,6 @@ function emitRedGuess(roomId, text) {
     kind: "blocked", // no seu game.html: "blocked" é vermelho e bold
     ts: Date.now(),
   });
-}
-
-function replayRoomHistoryToSocket(socket, roomId) {
-  const guessArr = roomGuessHistory[roomId] || [];
-  const talkArr = roomTalkHistory[roomId] || [];
-  for (const msg of guessArr) {
-    socket.emit("guessMessage", { ...msg, replay: true });
-  }
-  for (const msg of talkArr) {
-    socket.emit("talkMessage", { ...msg, replay: true });
-  }
 }
 
 // -------------------- WORDS LOADING --------------------
@@ -2555,7 +2587,7 @@ io.on("connection", (socket) => {
 
     cleanExpiredGhosts(rid);
 
-    if (isReservedAdminNick(nn) && !hasValidAdminKey(adminKey)) {
+    if (isReservedAdminNick(nn) && !hasValidAdminKey(nn, adminKey)) {
       emitNickBlocked(socket, rid, nick, "ADMIN_KEY_REQUIRED");
       return cb?.({ ok: false, reason: "NICK_BLOCKED" });
     }
@@ -2605,7 +2637,7 @@ io.on("connection", (socket) => {
 
     cleanExpiredGhosts(rid);
 
-    if (isReservedAdminNick(nn) && !hasValidAdminKey(adminKey)) {
+    if (isReservedAdminNick(nn) && !hasValidAdminKey(nn, adminKey)) {
       emitJoinRoomError(socket, rid, "nick_blocked", { nick: nickRaw });
       emitNickBlocked(socket, rid, nickRaw, "ADMIN_KEY_REQUIRED");
       return;
@@ -2707,6 +2739,7 @@ io.on("connection", (socket) => {
       joinedPlayer.clientId = cid;
       if (nickRaw) joinedPlayer.nick = nickRaw;
       joinedPlayer.isAdmin = isReservedAdminNick(joinedPlayer.nick);
+      if (typeof joinedPlayer.mutedTalkByAdmin !== "boolean") joinedPlayer.mutedTalkByAdmin = false;
       if (typeof joinedPlayer.score !== "number") joinedPlayer.score = 0;
       if (typeof joinedPlayer.wins !== "number") joinedPlayer.wins = 0;
       if (!Number.isInteger(joinedPlayer.guessedRoundId)) joinedPlayer.guessedRoundId = null;
@@ -2746,6 +2779,7 @@ io.on("connection", (socket) => {
         clientId: cid,
         nick: nickRaw,
         isAdmin: isReservedAdminNick(nickRaw),
+        mutedTalkByAdmin: false,
         score: 0,
         wins: 0,
         guessedRoundId: null,
@@ -2832,7 +2866,6 @@ io.on("connection", (socket) => {
       socket.emit("hintUpdate", { roomId: rid, mask: null, revealed: 0, maxReveal: 0 });
     }
 
-    replayRoomHistoryToSocket(socket, rid);
     socket.emit("joined", {
       roomId: rid,
       players: getConnectedRoomPlayers(rid),
@@ -2867,7 +2900,11 @@ io.on("connection", (socket) => {
     const isAdmin = sender ? isAdminPlayer(sender) : isReservedAdminNick(nick);
 
     maybeUnlockBySpeakerSwitch(rid, "talk", socket);
-    maybeUnlockBySpeakerSwitch(rid, "guess", socket);
+
+    if (sender && sender.mutedTalkByAdmin === true) {
+      blockOnlyToSocket(socket, "blocked", "(silenciado pelos adms)", "talk", rid);
+      return cb?.({ ok: true, blocked: true, muted: true });
+    }
 
     const st = ensureSpam(socket.id);
     const now = Date.now();
@@ -3007,7 +3044,221 @@ io.on("connection", (socket) => {
     return cb?.({ ok: true, message: "Denuncia de jogador registrada." });
   });
 
-  // GUESS — pontua + “perto” + travas + anti-spam + lock after guessed
+  function performAdminCancelDrawingNow(rid, actor, drawer, mode = "ROOM") {
+    if (!rid || !actor || !drawer) return { ok: false, reason: "INVALID_INPUT" };
+
+    clearDrawerDecisionTimer(rid);
+
+    clearGuessedStateForRound(rid);
+    restoreScoreSnapshot(rid);
+    emitScores(rid);
+
+    const drawerNick = String(drawer.nick || "desenhista").trim() || "desenhista";
+    const cancelText = mode === "PLAYER"
+      ? `❌ Desenho de ~${drawerNick} cancelado pelos ADMs!`
+      : "❌ Desenho cancelado pelos ADMs!";
+
+    emitRedGuess(rid, cancelText);
+    emitGuess(rid, {
+      roomId: rid,
+      nick: "Sistema",
+      text: "⚠️ Intervalo...",
+      kind: "warn",
+      ts: Date.now(),
+    });
+
+    startBreak(rid, "ADMIN_CANCEL", {
+      actorNick: actor.nick,
+      actorIsAdmin: true,
+    });
+
+    return { ok: true, message: mode === "PLAYER" ? `Desenho de ${drawerNick} cancelado.` : "Desenho cancelado pelos ADMs." };
+  }
+
+  socket.on("adminCancelDrawing", (payload = {}, cb) => {
+    const rid = String(payload.roomId || socket.data.roomId || "").trim();
+    if (!rid || !rooms[rid]) return cb?.({ ok: false, reason: "NO_ROOM" });
+
+    const actor = getAdminActor(rid, socket.id);
+    if (!actor) return cb?.({ ok: false, reason: "NOT_ADMIN" });
+
+    if (roomState[rid] !== "playing") return cb?.({ ok: false, reason: "NOT_PLAYING" });
+    if (roomPhase[rid] !== "round") return cb?.({ ok: false, reason: "NOT_ROUND" });
+    const drawer = currentDrawer(rid);
+    if (!drawer) return cb?.({ ok: false, reason: "NO_DRAWER" });
+    if (isAdminPlayer(drawer)) {
+      const actorSocketId = String(getPlayerSocketId(actor) || actor.id || "").trim();
+      const drawerSocketId = String(getPlayerSocketId(drawer) || drawer.id || "").trim();
+      if (actorSocketId && drawerSocketId && actorSocketId === drawerSocketId) {
+        return cb?.({
+          ok: false,
+          reason: "CANNOT_CANCEL_SELF_DRAWING",
+          message: "ADM nao pode cancelar o proprio desenho.",
+        });
+      }
+      return cb?.({
+        ok: false,
+        reason: "CANNOT_CANCEL_ADMIN_DRAWING",
+        message: "Nao e permitido cancelar desenho de outro ADM.",
+      });
+    }
+
+    return cb?.(performAdminCancelDrawingNow(rid, actor, drawer, "ROOM"));
+  });
+
+  socket.on("adminCancelPlayerDrawing", (payload = {}, cb) => {
+    const rid = String(payload.roomId || socket.data.roomId || "").trim();
+    if (!rid || !rooms[rid]) return cb?.({ ok: false, reason: "NO_ROOM" });
+
+    const actor = getAdminActor(rid, socket.id);
+    if (!actor) return cb?.({ ok: false, reason: "NOT_ADMIN" });
+
+    if (roomState[rid] !== "playing") return cb?.({ ok: false, reason: "NOT_PLAYING" });
+    if (roomPhase[rid] !== "round") return cb?.({ ok: false, reason: "NOT_ROUND" });
+
+    const targetSocketId = String(payload.targetSocketId || "").trim();
+    if (!targetSocketId) return cb?.({ ok: false, reason: "TARGET_REQUIRED" });
+    if (targetSocketId === socket.id) {
+      return cb?.({
+        ok: false,
+        reason: "CANNOT_CANCEL_SELF_DRAWING",
+        message: "ADM nao pode cancelar o proprio desenho.",
+      });
+    }
+
+    const target = findPlayerBySocket(rid, targetSocketId);
+    if (!target) return cb?.({ ok: false, reason: "TARGET_NOT_FOUND" });
+    if (isAdminPlayer(target)) {
+      return cb?.({
+        ok: false,
+        reason: "CANNOT_CANCEL_ADMIN_DRAWING",
+        message: "Nao e permitido cancelar desenho de outro ADM.",
+      });
+    }
+
+    const drawer = currentDrawer(rid);
+    if (!drawer) return cb?.({ ok: false, reason: "NO_DRAWER" });
+    const drawerSocketId = getPlayerSocketId(drawer);
+    if (!drawerSocketId || drawerSocketId !== targetSocketId) {
+      return cb?.({ ok: false, reason: "TARGET_NOT_DRAWER", message: "Esse player nao esta desenhando agora." });
+    }
+
+    return cb?.(performAdminCancelDrawingNow(rid, actor, drawer, "PLAYER"));
+  });
+
+  socket.on("adminKickPlayer", (payload = {}, cb) => {
+    const rid = String(payload.roomId || socket.data.roomId || "").trim();
+    if (!rid || !rooms[rid]) return cb?.({ ok: false, reason: "NO_ROOM" });
+
+    const actor = getAdminActor(rid, socket.id);
+    if (!actor) return cb?.({ ok: false, reason: "NOT_ADMIN" });
+
+    const targetSocketId = String(payload.targetSocketId || "").trim();
+    if (!targetSocketId) return cb?.({ ok: false, reason: "TARGET_REQUIRED" });
+    if (targetSocketId === socket.id) return cb?.({ ok: false, reason: "CANNOT_KICK_SELF" });
+
+    const target = findPlayerBySocket(rid, targetSocketId);
+    if (!target) return cb?.({ ok: false, reason: "TARGET_NOT_FOUND" });
+
+    const targetNick = String(target.nick || "jogador").trim() || "jogador";
+    const targetClientId = String(target.clientId || "").trim() || null;
+    const targetSocket = io.sockets.sockets.get(targetSocketId);
+
+    if (targetSocket) {
+      targetSocket.emit("afkWarning", { roomId: rid, active: false });
+      targetSocket.leave(rid);
+    }
+
+    removeFromRoom(rid, targetSocketId, "ADMIN_KICK", { clientId: targetClientId });
+
+    if (targetSocket) {
+      if (targetSocket.data.roomId === rid) {
+        targetSocket.data.roomId = null;
+        targetSocket.data.nick = null;
+        targetSocket.data.clientId = null;
+        targetSocket.data.token = null;
+      }
+      targetSocket.emit("left", { roomId: rid, reason: "ADMIN_KICK" });
+    }
+
+    if (rooms[rid] && rooms[rid].length > 0) {
+      emitTalk(rid, {
+        roomId: rid,
+        nick: "Sistema",
+        text: `🔨 ~${targetNick} foi expulso pelos ADMs.`,
+        kind: "systemBlue",
+        ts: Date.now(),
+      });
+
+      updateRoomState(rid);
+      ensureRoomTimers(rid);
+      if (roomPhase[rid] === "break") emitDrawerQueue(rid);
+    }
+
+    return cb?.({ ok: true, message: `${targetNick} foi expulso da sala.` });
+  });
+
+  socket.on("adminMutePlayer", (payload = {}, cb) => {
+    const rid = String(payload.roomId || socket.data.roomId || "").trim();
+    if (!rid || !rooms[rid]) return cb?.({ ok: false, reason: "NO_ROOM" });
+
+    const actor = getAdminActor(rid, socket.id);
+    if (!actor) return cb?.({ ok: false, reason: "NOT_ADMIN" });
+
+    const targetSocketId = String(payload.targetSocketId || "").trim();
+    if (!targetSocketId) return cb?.({ ok: false, reason: "TARGET_REQUIRED" });
+    if (targetSocketId === socket.id) return cb?.({ ok: false, reason: "CANNOT_MUTE_SELF" });
+
+    const target = findPlayerBySocket(rid, targetSocketId);
+    if (!target) return cb?.({ ok: false, reason: "TARGET_NOT_FOUND" });
+    if (isAdminPlayer(target)) {
+      return cb?.({
+        ok: false,
+        reason: "CANNOT_MUTE_ADMIN",
+        message: "Nao e permitido silenciar outro ADM.",
+      });
+    }
+
+    const targetNick = String(target.nick || "jogador").trim() || "jogador";
+    const forceMuted = typeof payload.forceMuted === "boolean" ? payload.forceMuted : null;
+    const wasMuted = target.mutedTalkByAdmin === true || String(target.mutedTalkByAdmin || "").toLowerCase() === "true";
+    target.mutedTalkByAdmin = forceMuted === null ? !wasMuted : forceMuted;
+
+    const targetSocket = io.sockets.sockets.get(targetSocketId);
+    if (targetSocket && target.mutedTalkByAdmin === true) {
+      targetSocket.emit("talkMessage", {
+        roomId: rid,
+        nick: "Sistema",
+        text: "(silenciado pelos adms)",
+        kind: "blocked",
+        ts: Date.now(),
+      });
+    }
+
+    if (target.mutedTalkByAdmin === true) {
+      emitTalk(rid, {
+        roomId: rid,
+        nick: "Sistema",
+        text: `🔇 ~${targetNick} foi silenciado pelos ADMs.`,
+        kind: "systemBlue",
+        ts: Date.now(),
+      });
+      emitScores(rid);
+      return cb?.({ ok: true, muted: true, message: `${targetNick} foi silenciado no chat social.` });
+    }
+
+    emitTalk(rid, {
+      roomId: rid,
+      nick: "Sistema",
+      text: `🔊 ~${targetNick} foi dessilenciado pelos ADMs.`,
+      kind: "systemBlue",
+      ts: Date.now(),
+    });
+    emitScores(rid);
+    return cb?.({ ok: true, muted: false, message: `${targetNick} foi dessilenciado no chat social.` });
+  });
+
+  // GUESS — pontua + “perto” + travas + lock after guessed
   socket.on("guessMessage", (payload = {}, cb) => {
     const rid = String(payload.roomId || socket.data.roomId || "").trim();
     if (!rid) return cb?.({ ok: false, reason: "NO_ROOM" });
@@ -3023,8 +3274,6 @@ io.on("connection", (socket) => {
     const sender = findPlayerBySocket(rid, socket.id);
     const isAdmin = sender ? isAdminPlayer(sender) : isReservedAdminNick(nick);
 
-    maybeUnlockBySpeakerSwitch(rid, "talk", socket);
-    maybeUnlockBySpeakerSwitch(rid, "guess", socket);
     if (!guardCanGuess(rid, "guessMessage", socket, nick)) {
       return cb?.({ ok: false, reason: "INVALID_STATE" });
     }
@@ -3090,34 +3339,6 @@ io.on("connection", (socket) => {
       return cb?.({ ok: false, locked: true, reason: "WAIT_DRAW" });
       }
     }
-
-    // anti-spam guess repetido (mesma palavra 5x -> 6ª bloqueia)
-    const st = ensureSpam(socket.id);
-    const sKey = normalizeNear(text);
-    if (st.lastGuess === sKey) st.guessRepeat = Number(st.guessRepeat || 0) + 1;
-    else {
-      st.lastGuess = sKey;
-      st.guessRepeat = 1;
-    }
-    if (st.guessRepeat > 5) {
-      blockOnlyToSocket(socket, "blocked", "bloqueado!(spam) Aguarde alguns segundos ou outra pessoa falar.", "guess", rid);
-      return cb?.({ ok: true, blocked: true, spam: true });
-    }
-
-    const now = Date.now();
-    const seqBlock = checkConsecutiveBlocked(rid, "guess", socket, now);
-    if (seqBlock.blocked) {
-      blockOnlyToSocket(
-        socket,
-        "blocked",
-        "bloqueado!(flood) Aguarde 1 minuto ou outra pessoa falar.",
-        "guess",
-        rid
-      );
-      return cb?.({ ok: true, blocked: true, flood: true, waitMs: seqBlock.waitMs });
-    }
-
-    registerConsecutiveMessage(rid, "guess", socket, now);
 
     if (isCorrectGuess(rid, text)) {
       const { guesserAdd, drawerAdd } = awardPointsForCorrectGuess(rid, socket.id);

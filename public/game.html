@@ -33,6 +33,8 @@
           <button id="menuMuteBtn" type="button" aria-pressed="false">Mutar sons e notificacoes</button>
           <button id="menuMobileLayoutBtn" type="button" aria-pressed="false">📱 Modo celular: desligado</button>
           <button id="menuReportPlayerBtn" type="button">Denunciar jogador</button>
+          <button id="menuAdminKickBtn" type="button" hidden>Expulsar player</button>
+          <button id="menuAdminCancelBtn" type="button" hidden>Cancelar desenho</button>
         </div>
       </div>
 
@@ -165,8 +167,8 @@
             </div>
 
             <div class="toolsActions">
-              <button id="btnUndo">Undo</button>
-              <button id="btnRedo">Redo</button>
+              <button id="btnUndo" type="button" title="Desfazer" aria-label="Desfazer">←</button>
+              <button id="btnRedo" type="button" title="Refazer" aria-label="Refazer">→</button>
               <button id="btnClear">Limpar tudo</button>
             </div>
 
@@ -351,11 +353,24 @@
   <div id="reportPlayerOverlay" class="reportConfirmOverlay" hidden>
     <div class="reportConfirmCard" role="dialog" aria-modal="true" aria-labelledby="reportPlayerTitle">
       <div id="reportPlayerTitle" class="reportConfirmTitle">Denunciar jogador</div>
-      <p class="reportConfirmText">Selecione o jogador para registrar a denuncia.</p>
+      <p id="reportPlayerText" class="reportConfirmText">Selecione o jogador para registrar a denuncia.</p>
       <select id="reportPlayerSelect"></select>
       <div class="reportConfirmActions">
-        <button id="reportPlayerSubmitBtn" type="button">Denunciar</button>
+        <button id="reportPlayerSubmitBtn" type="button">Confirmar</button>
         <button id="reportPlayerCancelBtn" type="button">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="adminPlayerActionsOverlay" class="reportConfirmOverlay" hidden>
+    <div class="reportConfirmCard" role="dialog" aria-modal="true" aria-labelledby="adminPlayerActionsTitle">
+      <div id="adminPlayerActionsTitle" class="reportConfirmTitle">Acoes de ADM</div>
+      <p id="adminPlayerActionsText" class="reportConfirmText">Selecione uma acao para o player.</p>
+      <div class="reportConfirmActions reportConfirmActions--stack">
+        <button id="adminActionMuteBtn" type="button">Silenciar player</button>
+        <button id="adminActionKickBtn" type="button">Expulsar player</button>
+        <button id="adminActionCancelDrawingBtn" type="button">Cancelar desenho do player</button>
+        <button id="adminActionCloseBtn" type="button">Fechar</button>
       </div>
     </div>
   </div>
@@ -380,8 +395,26 @@
       const params = new URLSearchParams(window.location.search);
       const roomId = params.get("room");
       const nick = params.get("nick");
-      const ADMIN_NICK_RESERVED = "Miau-Sensei";
-      const ADMIN_KEY_SESSION_KEY = "omart_admin_key";
+      const RESERVED_NICK_RULES = [
+        { nick: "Miau-Sensei", keySession: "omart_admin_key_miau_sensei", style: "admin" },
+        { nick: "Koyah_", keySession: "omart_admin_key_koyah", style: "koyah" },
+        { nick: "Miau_", keySession: "omart_admin_key_miau_", style: "miau" },
+      ];
+      const RESERVED_NICK_RULES_BY_NORM = (() => {
+        const map = new Map();
+        RESERVED_NICK_RULES.forEach((rule) => {
+          const nickValue = String(rule && rule.nick ? rule.nick : "").trim();
+          if (!nickValue) return;
+          const key = nickValue.toLowerCase();
+          if (map.has(key)) return;
+          map.set(key, {
+            nick: nickValue,
+            keySession: String(rule && rule.keySession ? rule.keySession : "").trim(),
+            style: String(rule && rule.style ? rule.style : "admin").trim() || "admin",
+          });
+        });
+        return map;
+      })();
       const ADMIN_CROWN = "👑";
 
       if (!roomId || !nick) {
@@ -401,23 +434,39 @@
         return;
       }
 
+      function getReservedNickRule(value) {
+        const key = String(value || "").trim().toLowerCase();
+        if (!key) return null;
+        return RESERVED_NICK_RULES_BY_NORM.get(key) || null;
+      }
+
       function isReservedAdminNick(value) {
-        return String(value || "").trim().toLowerCase() === ADMIN_NICK_RESERVED.toLowerCase();
+        return !!getReservedNickRule(value);
+      }
+
+      function clearAllReservedNickKeys() {
+        RESERVED_NICK_RULES.forEach((rule) => {
+          const storageKey = String(rule && rule.keySession ? rule.keySession : "").trim();
+          if (!storageKey) return;
+          sessionStorage.removeItem(storageKey);
+        });
       }
 
       function resolveAdminKeyForCurrentNick() {
-        if (!isReservedAdminNick(nick)) {
-          sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+        const rule = getReservedNickRule(nick);
+        if (!rule) {
+          clearAllReservedNickKeys();
           return "";
         }
 
-        const saved = String(sessionStorage.getItem(ADMIN_KEY_SESSION_KEY) || "").trim();
-        const typed = window.prompt(`Digite a chave para usar o nick "${ADMIN_NICK_RESERVED}":`, saved);
+        const storageKey = String(rule.keySession || "").trim();
+        const saved = storageKey ? String(sessionStorage.getItem(storageKey) || "").trim() : "";
+        const typed = window.prompt(`Digite a chave para usar o nick "${rule.nick}":`, saved);
         if (typed == null) return null;
         const key = String(typed).trim();
         if (!key) return null;
 
-        sessionStorage.setItem(ADMIN_KEY_SESSION_KEY, key);
+        if (storageKey) sessionStorage.setItem(storageKey, key);
         return key;
       }
 
@@ -586,6 +635,8 @@
       const menuMuteBtnEl = document.getElementById("menuMuteBtn");
       const menuMobileLayoutBtnEl = document.getElementById("menuMobileLayoutBtn");
       const menuReportPlayerBtnEl = document.getElementById("menuReportPlayerBtn");
+      const menuAdminKickBtnEl = document.getElementById("menuAdminKickBtn");
+      const menuAdminCancelBtnEl = document.getElementById("menuAdminCancelBtn");
       const roomNameEl = document.getElementById("roomName");
       const nickNameEl = document.getElementById("nickName");
       const playersListEl = document.getElementById("playersList");
@@ -668,9 +719,18 @@
       const rulesOverlayEl = document.getElementById("rulesOverlay");
       const rulesCloseBtnEl = document.getElementById("rulesCloseBtn");
       const reportPlayerOverlayEl = document.getElementById("reportPlayerOverlay");
+      const reportPlayerTitleEl = document.getElementById("reportPlayerTitle");
+      const reportPlayerTextEl = document.getElementById("reportPlayerText");
       const reportPlayerSelectEl = document.getElementById("reportPlayerSelect");
       const reportPlayerSubmitBtnEl = document.getElementById("reportPlayerSubmitBtn");
       const reportPlayerCancelBtnEl = document.getElementById("reportPlayerCancelBtn");
+      const adminPlayerActionsOverlayEl = document.getElementById("adminPlayerActionsOverlay");
+      const adminPlayerActionsTitleEl = document.getElementById("adminPlayerActionsTitle");
+      const adminPlayerActionsTextEl = document.getElementById("adminPlayerActionsText");
+      const adminActionMuteBtnEl = document.getElementById("adminActionMuteBtn");
+      const adminActionKickBtnEl = document.getElementById("adminActionKickBtn");
+      const adminActionCancelDrawingBtnEl = document.getElementById("adminActionCancelDrawingBtn");
+      const adminActionCloseBtnEl = document.getElementById("adminActionCloseBtn");
       const afkOverlayEl = document.getElementById("afkOverlay");
       const afkCountdownEl = document.getElementById("afkCountdown");
       const afkStillHereBtnEl = document.getElementById("afkStillHereBtn");
@@ -693,6 +753,11 @@
 
       const ROOM_LIMIT_BY_TIER = { 3: 10, 6: 12, 9: 15 };
       const DEFAULT_ROOM_LIMIT = 12;
+      const PLAYER_MODAL_MODE = Object.freeze({
+        REPORT: "report",
+        KICK: "kick",
+        MUTE: "mute",
+      });
 
       function getRoomPlayerLimit(roomIdRaw) {
         const parts = String(roomIdRaw || "").trim().split(/\s+/);
@@ -733,10 +798,17 @@
 
       let historyStack = [];
       let redoStack = [];
+      let historySteps = [];
+      let redoSteps = [];
+      let activeHistoryStep = null;
 
       let reportVoted = false;
       let reportConfirmPending = false;
       let reportPlayerPending = false;
+      let reportPlayerActionMode = PLAYER_MODAL_MODE.REPORT;
+      let adminPlayerActionPending = false;
+      let adminPlayerActionTarget = null;
+      const adminMuteTogglePendingIds = new Set();
       let latestRankingPlayers = [];
       let turnChoicePending = false;
       let hasAnyCorrect = false;
@@ -745,6 +817,8 @@
       let afkDeadlineAt = null;
       let afkCountdownTimer = null;
       let lastCanvasFitLayoutKey = "";
+      let mobileStableViewportHeight = Math.max(1, window.innerHeight || 1);
+      let mobileKeyboardLikelyOpen = false;
       const CORRECT_HIT_SFX_SRC = "/sfx/acerto-hit.mp3";
       const CORRECT_HIT_POOL_SIZE = 4;
       const correctHitPool = [];
@@ -1093,19 +1167,19 @@
         const now = ctx.currentTime + 0.002;
         playPresenceTone(ctx, {
           startAt: now,
-          fromFreq: 840,
-          toFreq: 1120,
-          duration: 0.12,
-          peakGain: 0.17,
+          fromFreq: 420,
+          toFreq: 340,
+          duration: 0.14,
+          peakGain: 0.2,
           type: "triangle",
         });
         playPresenceTone(ctx, {
           startAt: now + 0.09,
-          fromFreq: 980,
-          toFreq: 1320,
-          duration: 0.13,
-          peakGain: 0.15,
-          type: "sawtooth",
+          fromFreq: 500,
+          toFreq: 390,
+          duration: 0.16,
+          peakGain: 0.18,
+          type: "sine",
         });
       }
 
@@ -1277,7 +1351,46 @@
         localStorage.setItem(THEME_KEY, next);
       }
 
-      function resetHistory() { historyStack = []; redoStack = []; }
+      function flattenHistorySteps(steps) {
+        const flat = [];
+        const list = Array.isArray(steps) ? steps : [];
+        for (const step of list) {
+          if (!Array.isArray(step) || !step.length) continue;
+          for (const action of step) flat.push(action);
+        }
+        return flat;
+      }
+
+      function syncFlatHistoryFromSteps() {
+        historyStack = flattenHistorySteps(historySteps);
+      }
+
+      function resetHistory() {
+        historyStack = [];
+        redoStack = [];
+        historySteps = [];
+        redoSteps = [];
+        activeHistoryStep = null;
+      }
+
+      function beginHistoryStep() {
+        if (activeHistoryStep) return;
+        activeHistoryStep = [];
+      }
+
+      function commitHistoryStep() {
+        if (!activeHistoryStep) return;
+        if (activeHistoryStep.length) {
+          historySteps.push(activeHistoryStep.slice());
+          redoSteps = [];
+          redoStack = [];
+        }
+        activeHistoryStep = null;
+      }
+
+      function cancelHistoryStep() {
+        activeHistoryStep = null;
+      }
 
       function rebuildCanvasFromHistory() {
         clearCanvasLocal();
@@ -1527,6 +1640,18 @@
         return isAdmin === true ? `${ADMIN_CROWN} ${safeNick}` : safeNick;
       }
 
+      function getAdminVisualStyleForNick(rawNick) {
+        const plain = String(rawNick || "").trim().toLowerCase();
+        if (plain === "koyah" || plain === "koyah_") return "koyah";
+        if (plain === "miau" || plain === "miau_") return "miau";
+
+        const rule = getReservedNickRule(rawNick);
+        if (!rule) return "admin";
+        const style = String(rule.style || "admin").trim().toLowerCase();
+        if (style === "koyah" || style === "miau") return style;
+        return "admin";
+      }
+
       function createNickLabelElement(rawNick, isAdmin, extraClass = "") {
         const nickEl = document.createElement("span");
 
@@ -1534,6 +1659,7 @@
         if (isAdmin === true) {
           nickEl.classList.add("adminNick");
           if (extraClass) nickEl.classList.add(extraClass);
+          nickEl.classList.add(`adminNick--tone-${getAdminVisualStyleForNick(safeNick)}`);
 
           const crownEl = document.createElement("span");
           crownEl.className = "adminNick__crown";
@@ -1561,6 +1687,7 @@
 
       function renderMyNickName() {
         setNickContent(nickNameEl, nick, myIsAdmin, "???");
+        applyAdminMenuState();
       }
 
       function renderDrawerName(drawer) {
@@ -1596,6 +1723,7 @@
         if (nextIsAdmin === myIsAdmin) return;
         myIsAdmin = nextIsAdmin;
         renderMyNickName();
+        if (!myIsAdmin) closeAdminPlayerActions();
       }
 
       function renderVictoryNick(winnerNick, winnerIsAdmin) {
@@ -1935,7 +2063,25 @@
 
           const nameEl = document.createElement("span");
           nameEl.className = "player-name";
-          nameEl.appendChild(createNickLabelElement(pNick, pIsAdmin, "adminNick--ranking"));
+          if (myIsAdmin === true && !isMe && pIsAdmin !== true) {
+            const nameBtnEl = document.createElement("button");
+            nameBtnEl.type = "button";
+            nameBtnEl.className = "player-nameBtn";
+            const targetId = String(pId || "").trim();
+            const isPendingMute = !!targetId && adminMuteTogglePendingIds.has(targetId);
+            const muteActionText = p.mutedTalkByAdmin === true ? "Dessilenciar player" : "Silenciar player";
+            nameBtnEl.title = `${muteActionText}: ~${pNick}`;
+            nameBtnEl.disabled = isPendingMute;
+            nameBtnEl.appendChild(createNickLabelElement(pNick, pIsAdmin, "adminNick--ranking"));
+            nameBtnEl.addEventListener("click", (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              adminToggleMuteFromRanking(p);
+            });
+            nameEl.appendChild(nameBtnEl);
+          } else {
+            nameEl.appendChild(createNickLabelElement(pNick, pIsAdmin, "adminNick--ranking"));
+          }
           if (isMe) nameEl.appendChild(document.createTextNode(" (voce)"));
 
           const metaEl = document.createElement("span");
@@ -2061,6 +2207,13 @@
       let size = 4;
       let alpha = 1.0;
       let brushTexture = "flat";
+      const DRAW_TOOL_DEFAULTS = Object.freeze({
+        tool: "brush",
+        color: "#000000",
+        size: 4,
+        alpha: 1,
+        brushTexture: "flat",
+      });
       const BRUSH_TEXTURE_KEYS = new Set(["flat", "crayon", "watercolor", "oil"]);
 
       function clamp01(x) {
@@ -2194,6 +2347,14 @@
         alpha = clamp01(v01);
         alphaRange.value = String(Math.round(alpha * 100));
         alphaVal.textContent = alpha.toFixed(2);
+      }
+
+      function applyDefaultDrawToolPreset() {
+        setTool(DRAW_TOOL_DEFAULTS.tool);
+        setColor(DRAW_TOOL_DEFAULTS.color);
+        setSize(DRAW_TOOL_DEFAULTS.size);
+        setAlpha(DRAW_TOOL_DEFAULTS.alpha);
+        setBrushTexture(DRAW_TOOL_DEFAULTS.brushTexture);
       }
 
       function setToolControlsEnabled(enabled) {
@@ -2718,6 +2879,12 @@
         else closeMenuDropdown();
       }
 
+      function applyAdminMenuState() {
+        const isAdmin = myIsAdmin === true;
+        if (menuAdminKickBtnEl) menuAdminKickBtnEl.hidden = !isAdmin;
+        if (menuAdminCancelBtnEl) menuAdminCancelBtnEl.hidden = !isAdmin;
+      }
+
       function closeRulesModal() {
         if (!rulesOverlayEl) return;
         rulesOverlayEl.hidden = true;
@@ -2755,15 +2922,181 @@
         options.forEach((p) => {
           const opt = document.createElement("option");
           opt.value = String(p.id);
-          opt.textContent = `${formatNickLabel(p.nick, p.isAdmin === true)} (${Number(p.score || 0)} pts)`;
+          const mutedTag = p && p.mutedTalkByAdmin === true ? " • silenciado" : "";
+          opt.textContent = `${formatNickLabel(p.nick, p.isAdmin === true)} (${Number(p.score || 0)} pts${mutedTag})`;
           reportPlayerSelectEl.appendChild(opt);
         });
       }
 
-      function openReportPlayerModal() {
+      function openReportPlayerModal(mode = PLAYER_MODAL_MODE.REPORT) {
         if (!reportPlayerOverlayEl) return;
+        reportPlayerActionMode = mode;
+
+        if (reportPlayerTitleEl && reportPlayerTextEl && reportPlayerSubmitBtnEl) {
+          if (mode === PLAYER_MODAL_MODE.KICK) {
+            reportPlayerTitleEl.textContent = "Expulsar jogador";
+            reportPlayerTextEl.textContent = "Selecione o jogador para expulsar da sala agora.";
+            reportPlayerSubmitBtnEl.textContent = "Expulsar";
+          } else if (mode === PLAYER_MODAL_MODE.MUTE) {
+            reportPlayerTitleEl.textContent = "Silenciar/Dessilenciar jogador";
+            reportPlayerTextEl.textContent = "Selecione o jogador para alternar silenciar/dessilenciar no chat social.";
+            reportPlayerSubmitBtnEl.textContent = "Aplicar";
+          } else {
+            reportPlayerTitleEl.textContent = "Denunciar jogador";
+            reportPlayerTextEl.textContent = "Selecione o jogador para registrar a denuncia.";
+            reportPlayerSubmitBtnEl.textContent = "Denunciar";
+          }
+        }
+
         rebuildReportPlayerOptions();
         reportPlayerOverlayEl.hidden = false;
+      }
+
+      function findLatestPlayerById(playerId) {
+        const targetId = String(playerId || "").trim();
+        if (!targetId) return null;
+        const list = Array.isArray(latestRankingPlayers) ? latestRankingPlayers : [];
+        return list.find((p) => p && String(p.id || "").trim() === targetId) || null;
+      }
+
+      function patchLatestPlayerById(playerId, partial = {}) {
+        const targetId = String(playerId || "").trim();
+        if (!targetId) return false;
+        const list = Array.isArray(latestRankingPlayers) ? latestRankingPlayers : [];
+        const idx = list.findIndex((p) => p && String(p.id || "").trim() === targetId);
+        if (idx < 0) return false;
+        const current = list[idx] || {};
+        list[idx] = { ...current, ...partial };
+        return true;
+      }
+
+      function adminToggleMuteFromRanking(player) {
+        if (myIsAdmin !== true) return;
+
+        const targetSocketId = String((player && player.id) || "").trim();
+        if (!targetSocketId) return;
+        if (targetSocketId === String(mySocketId || "").trim()) return;
+        if (player && player.isAdmin === true) {
+          toast("Nao e permitido silenciar outro ADM.");
+          return;
+        }
+        if (adminMuteTogglePendingIds.has(targetSocketId)) return;
+
+        const latestTarget = findLatestPlayerById(targetSocketId);
+        const mutedNow = latestTarget
+          ? latestTarget.mutedTalkByAdmin === true
+          : !!(player && player.mutedTalkByAdmin === true);
+        const nextMuted = !mutedNow;
+
+        adminMuteTogglePendingIds.add(targetSocketId);
+        renderRanking(latestRankingPlayers);
+
+        const REQUEST_TIMEOUT_MS = 6000;
+        let settled = false;
+        const settleRequest = () => {
+          if (settled) return false;
+          settled = true;
+          adminMuteTogglePendingIds.delete(targetSocketId);
+          return true;
+        };
+
+        const failSafeTimer = setTimeout(() => {
+          if (!settleRequest()) return;
+          renderRanking(latestRankingPlayers);
+          toast("A acao demorou demais. Tente novamente.");
+        }, REQUEST_TIMEOUT_MS);
+
+        socket.emit("adminMutePlayer", { roomId, targetSocketId, forceMuted: nextMuted }, (res) => {
+          clearTimeout(failSafeTimer);
+          if (!settleRequest()) return;
+
+          if (!res || res.ok !== true) {
+            renderRanking(latestRankingPlayers);
+            toast((res && res.message) || "Nao foi possivel alternar silenciar/dessilenciar esse player.");
+            return;
+          }
+
+          if (typeof res.muted === "boolean") {
+            patchLatestPlayerById(targetSocketId, { mutedTalkByAdmin: res.muted });
+          }
+          renderRanking(latestRankingPlayers);
+          toast(res.message || "Acao aplicada.");
+        });
+      }
+
+      function setAdminPlayerActionsPending(nextPending) {
+        adminPlayerActionPending = !!nextPending;
+        const disabled = adminPlayerActionPending || !adminPlayerActionTarget;
+        const canCancelDrawing = !!adminPlayerActionTarget && adminPlayerActionTarget.isDrawer === true;
+        if (adminActionMuteBtnEl) adminActionMuteBtnEl.disabled = disabled;
+        if (adminActionKickBtnEl) adminActionKickBtnEl.disabled = disabled;
+        if (adminActionCancelDrawingBtnEl) adminActionCancelDrawingBtnEl.disabled = disabled || !canCancelDrawing;
+        if (adminActionCloseBtnEl) adminActionCloseBtnEl.disabled = adminPlayerActionPending;
+      }
+
+      function refreshAdminActionTargetFromRanking() {
+        if (!adminPlayerActionTarget) return false;
+        const fresh = findLatestPlayerById(adminPlayerActionTarget.id);
+        if (!fresh) {
+          adminPlayerActionTarget = null;
+          return false;
+        }
+        adminPlayerActionTarget = {
+          id: String(fresh.id || "").trim(),
+          nick: String(fresh.nick || "jogador").trim() || "jogador",
+          mutedTalkByAdmin: fresh.mutedTalkByAdmin === true,
+          isDrawer: fresh.isDrawer === true,
+        };
+        return true;
+      }
+
+      function updateAdminPlayerActionsUi() {
+        if (!adminPlayerActionTarget) return;
+        if (adminPlayerActionsTitleEl) {
+          adminPlayerActionsTitleEl.textContent = `Acoes de ADM: ~${adminPlayerActionTarget.nick}`;
+        }
+        if (adminPlayerActionsTextEl) {
+          const drawerText = adminPlayerActionTarget.isDrawer ? "Está desenhando agora." : "Não está desenhando agora.";
+          const muteText = adminPlayerActionTarget.mutedTalkByAdmin ? "Está silenciado no chat social." : "Não está silenciado.";
+          adminPlayerActionsTextEl.textContent = `${drawerText} ${muteText}`;
+        }
+        if (adminActionMuteBtnEl) {
+          adminActionMuteBtnEl.textContent = adminPlayerActionTarget.mutedTalkByAdmin
+            ? "Dessilenciar player"
+            : "Silenciar player";
+        }
+        setAdminPlayerActionsPending(adminPlayerActionPending);
+      }
+
+      function closeAdminPlayerActions() {
+        adminPlayerActionTarget = null;
+        if (adminPlayerActionsOverlayEl) adminPlayerActionsOverlayEl.hidden = true;
+        setAdminPlayerActionsPending(false);
+      }
+
+      function openAdminPlayerActions(player) {
+        if (myIsAdmin !== true) return;
+        if (!adminPlayerActionsOverlayEl) return;
+
+        const targetId = String((player && player.id) || "").trim();
+        if (!targetId) return;
+        if (targetId === String(mySocketId || "").trim()) return;
+
+        adminPlayerActionTarget = {
+          id: targetId,
+          nick: String((player && player.nick) || "jogador").trim() || "jogador",
+          mutedTalkByAdmin: player && player.mutedTalkByAdmin === true,
+          isDrawer: player && player.isDrawer === true,
+        };
+
+        if (!refreshAdminActionTargetFromRanking()) {
+          closeAdminPlayerActions();
+          toast("Esse player nao esta mais na sala.");
+          return;
+        }
+        updateAdminPlayerActionsUi();
+        setAdminPlayerActionsPending(false);
+        adminPlayerActionsOverlayEl.hidden = false;
       }
 
       function stopAfkCountdown() {
@@ -3053,6 +3386,9 @@
       function sendAction(action) {
         historyStack.push(action);
         redoStack = [];
+        if (activeHistoryStep) activeHistoryStep.push(action);
+        else historySteps.push([action]);
+        redoSteps = [];
         pendingDrawActions.push(action);
         if (pendingDrawActions.length >= DRAW_BATCH_MAX) {
           flushPendingDrawActions();
@@ -3066,11 +3402,7 @@
       loadThemePreference();
 
       initPalette();
-      setTool("brush");
-      setColor("#000000");
-      setSize(4);
-      setAlpha(1);
-      setBrushTexture("flat");
+      applyDefaultDrawToolPreset();
 
       toolSelect.addEventListener("change", () => setTool(toolSelect.value));
       toolButtons.forEach((btn) => {
@@ -3096,33 +3428,43 @@
         showDrawerCanvasNotice("Canvas limpo");
       });
 
-      btnUndo.addEventListener("click", () => {
+      function performUndoStep() {
         if (!canDrawHere()) return;
-        if (!historyStack.length) return;
+        if (!historySteps.length) return;
         resetPendingDrawActions();
+        cancelHistoryStep();
 
-        const last = historyStack.pop();
-        redoStack.push(last);
+        const lastStep = historySteps.pop();
+        if (Array.isArray(lastStep) && lastStep.length) {
+          redoSteps.push(lastStep.slice());
+        }
+        syncFlatHistoryFromSteps();
 
         rebuildCanvasFromHistory();
 
         socket.emit("replaceHistory", { roomId, history: historyStack });
         sendSnapshot();
-      });
+      }
 
-      btnRedo.addEventListener("click", () => {
+      function performRedoStep() {
         if (!canDrawHere()) return;
-        if (!redoStack.length) return;
+        if (!redoSteps.length) return;
         resetPendingDrawActions();
+        cancelHistoryStep();
 
-        const a = redoStack.pop();
-        historyStack.push(a);
+        const step = redoSteps.pop();
+        if (!Array.isArray(step) || !step.length) return;
+        historySteps.push(step.slice());
+        syncFlatHistoryFromSteps();
 
         rebuildCanvasFromHistory();
 
         socket.emit("replaceHistory", { roomId, history: historyStack });
         sendSnapshot();
-      });
+      }
+
+      btnUndo.addEventListener("click", performUndoStep);
+      btnRedo.addEventListener("click", performRedoStep);
 
       btnReport.addEventListener("click", () => {
         if (btnReport.disabled) return;
@@ -3202,18 +3544,48 @@
         reportPlayerSubmitBtnEl.disabled = true;
         reportPlayerCancelBtnEl.disabled = true;
 
-        socket.emit("reportPlayer", { roomId, targetSocketId }, (res) => {
+        const mode = reportPlayerActionMode;
+        let eventName = "reportPlayer";
+        let failMsg = "Nao foi possivel denunciar jogador.";
+        let successFallback = "Denuncia registrada.";
+
+        if (mode === PLAYER_MODAL_MODE.KICK) {
+          eventName = "adminKickPlayer";
+          failMsg = "Nao foi possivel expulsar jogador.";
+          successFallback = "Jogador expulso.";
+        } else if (mode === PLAYER_MODAL_MODE.MUTE) {
+          eventName = "adminMutePlayer";
+          failMsg = "Nao foi possivel silenciar jogador.";
+          successFallback = "Acao aplicada.";
+        }
+
+        const REQUEST_TIMEOUT_MS = 6000;
+        let settled = false;
+        const settleRequest = () => {
+          if (settled) return false;
+          settled = true;
           reportPlayerPending = false;
           reportPlayerSubmitBtnEl.disabled = false;
           reportPlayerCancelBtnEl.disabled = false;
+          return true;
+        };
+
+        const failSafeTimer = setTimeout(() => {
+          if (!settleRequest()) return;
+          toast("A acao demorou demais. Tente novamente.");
+        }, REQUEST_TIMEOUT_MS);
+
+        socket.emit(eventName, { roomId, targetSocketId }, (res) => {
+          clearTimeout(failSafeTimer);
+          if (!settleRequest()) return;
 
           if (!res || res.ok !== true) {
-            toast("Nao foi possivel denunciar jogador.");
+            toast(failMsg);
             return;
           }
 
           closeReportPlayerModal();
-          toast(res.message || "Denuncia registrada.");
+          toast(res.message || successFallback);
         });
       });
 
@@ -3227,6 +3599,116 @@
         if (reportPlayerPending) return;
         closeReportPlayerModal();
       });
+
+      function emitAdminPlayerAction(eventName, failMsg, successFallback, { closeOnSuccess = false } = {}) {
+        if (adminPlayerActionPending) return;
+        if (myIsAdmin !== true) return;
+        if (!adminPlayerActionTarget || !adminPlayerActionTarget.id) {
+          toast("Selecione um player no ranking.");
+          return;
+        }
+
+        const targetSocketId = String(adminPlayerActionTarget.id || "").trim();
+        if (!targetSocketId) {
+          toast("Selecione um player no ranking.");
+          return;
+        }
+
+        setAdminPlayerActionsPending(true);
+        const REQUEST_TIMEOUT_MS = 6000;
+        let settled = false;
+        const settleRequest = () => {
+          if (settled) return false;
+          settled = true;
+          setAdminPlayerActionsPending(false);
+          return true;
+        };
+
+        const failSafeTimer = setTimeout(() => {
+          if (!settleRequest()) return;
+          toast("A acao demorou demais. Tente novamente.");
+        }, REQUEST_TIMEOUT_MS);
+
+        socket.emit(eventName, { roomId, targetSocketId }, (res) => {
+          clearTimeout(failSafeTimer);
+          if (!settleRequest()) return;
+
+          if (!res || res.ok !== true) {
+            toast((res && res.message) || failMsg);
+            refreshAdminActionTargetFromRanking();
+            if (adminPlayerActionTarget) updateAdminPlayerActionsUi();
+            else closeAdminPlayerActions();
+            return;
+          }
+
+          if (eventName === "adminMutePlayer" && adminPlayerActionTarget && typeof res.muted === "boolean") {
+            adminPlayerActionTarget.mutedTalkByAdmin = res.muted;
+            patchLatestPlayerById(targetSocketId, { mutedTalkByAdmin: res.muted });
+          }
+          if (eventName === "adminCancelPlayerDrawing" && adminPlayerActionTarget) {
+            adminPlayerActionTarget.isDrawer = false;
+            patchLatestPlayerById(targetSocketId, { isDrawer: false });
+          }
+
+          refreshAdminActionTargetFromRanking();
+          if (adminPlayerActionTarget) updateAdminPlayerActionsUi();
+
+          if (closeOnSuccess) closeAdminPlayerActions();
+          toast((res && res.message) || successFallback);
+        });
+      }
+
+      if (adminActionCloseBtnEl) {
+        adminActionCloseBtnEl.addEventListener("click", () => {
+          if (adminPlayerActionPending) return;
+          closeAdminPlayerActions();
+        });
+      }
+
+      if (adminPlayerActionsOverlayEl) {
+        adminPlayerActionsOverlayEl.addEventListener("click", (e) => {
+          if (e.target !== adminPlayerActionsOverlayEl) return;
+          if (adminPlayerActionPending) return;
+          closeAdminPlayerActions();
+        });
+      }
+
+      if (adminActionMuteBtnEl) {
+        adminActionMuteBtnEl.addEventListener("click", () => {
+          emitAdminPlayerAction(
+            "adminMutePlayer",
+            "Nao foi possivel alternar silenciar/dessilenciar esse player.",
+            "Acao aplicada."
+          );
+        });
+      }
+
+      if (adminActionKickBtnEl) {
+        adminActionKickBtnEl.addEventListener("click", () => {
+          emitAdminPlayerAction(
+            "adminKickPlayer",
+            "Nao foi possivel expulsar esse player.",
+            "Player expulso.",
+            { closeOnSuccess: true }
+          );
+        });
+      }
+
+      if (adminActionCancelDrawingBtnEl) {
+        adminActionCancelDrawingBtnEl.addEventListener("click", () => {
+          if (!adminPlayerActionTarget || adminPlayerActionTarget.isDrawer !== true) {
+            toast("Esse player nao esta desenhando agora.");
+            updateAdminPlayerActionsUi();
+            setAdminPlayerActionsPending(false);
+            return;
+          }
+          emitAdminPlayerAction(
+            "adminCancelPlayerDrawing",
+            "Nao foi possivel cancelar o desenho desse player.",
+            "Desenho cancelado."
+          );
+        });
+      }
 
       afkStillHereBtnEl.addEventListener("click", () => {
         if (afkConfirmPending) return;
@@ -3284,8 +3766,31 @@
 
       menuReportPlayerBtnEl.addEventListener("click", () => {
         closeMenuDropdown();
-        openReportPlayerModal();
+        openReportPlayerModal(PLAYER_MODAL_MODE.REPORT);
       });
+
+      if (menuAdminKickBtnEl) {
+        menuAdminKickBtnEl.addEventListener("click", () => {
+          closeMenuDropdown();
+          if (myIsAdmin !== true) return;
+          openReportPlayerModal(PLAYER_MODAL_MODE.KICK);
+        });
+      }
+
+      if (menuAdminCancelBtnEl) {
+        menuAdminCancelBtnEl.addEventListener("click", () => {
+          closeMenuDropdown();
+          if (myIsAdmin !== true) return;
+
+          socket.emit("adminCancelDrawing", { roomId }, (res) => {
+            if (!res || res.ok !== true) {
+              toast((res && res.message) || "Nao foi possivel cancelar o desenho agora.");
+              return;
+            }
+            toast(res.message || "Desenho cancelado pelos ADMs.");
+          });
+        });
+      }
 
       document.addEventListener("click", (e) => {
         if (!menuDropdownEl || menuDropdownEl.hidden) return;
@@ -3536,6 +4041,7 @@
         }
 
         if (!wasDrawer && nowDrawer) {
+          if (drawEnabled) applyDefaultDrawToolPreset();
           tryPlayDrawerTurnSfx();
         }
 
@@ -3544,12 +4050,16 @@
       socket.on("drawControl", ({ roomId: rid, enabled, reason }) => {
         if (rid !== roomId) return;
 
+        const wasDrawerAccepted = drawerAccepted;
         drawEnabled = !!enabled;
 
         if (drawEnabled) {
           waitDrawLock = false;
           turnChoicePending = false;
           drawerAccepted = isDrawer;
+          if (isDrawer && !wasDrawerAccepted) {
+            applyDefaultDrawToolPreset();
+          }
           hideCanvasEventNotice();
         } else {
           drawerAccepted = false;
@@ -3621,7 +4131,7 @@
       socket.on("guessMessage", (msg) => {
         if (!msg || msg.roomId !== roomId) return;
         const isHintMsg = isHintGuessSystemMessage(msg);
-        if (!isHintMsg) addLine(guessBoxEl, msg);
+        addLine(guessBoxEl, msg);
         const isReplay = msg.replay === true;
 
         if (!isReplay && isHintMsg) {
@@ -3698,6 +4208,7 @@
         if (meByScore) {
           myIsAdmin = meByScore.isAdmin === true;
           renderMyNickName();
+          if (!myIsAdmin) closeAdminPlayerActions();
         }
         const me = list.find((p) => p && p.id === mySocketId) || null;
         guessedThisRound = !!(me && me.guessed === true && me.isDrawer !== true);
@@ -3738,6 +4249,8 @@
 
         historyStack.push(action);
         redoStack = [];
+        historySteps.push([action]);
+        redoSteps = [];
         applyActionLocal(action);
       });
 
@@ -3751,14 +4264,20 @@
           applyActionLocal(action);
         }
         redoStack = [];
+        historySteps.push(actions.slice());
+        redoSteps = [];
       });
 
-      socket.on("replaceHistory", ({ roomId: rid, history }) => {
+      socket.on("replaceHistory", ({ roomId: rid, history, from }) => {
         if (rid !== roomId) return;
+        if (from && mySocketId && from === mySocketId) return;
         if (!Array.isArray(history)) return;
 
         historyStack = history.slice();
         redoStack = [];
+        historySteps = historyStack.map((action) => [action]);
+        redoSteps = [];
+        activeHistoryStep = null;
 
         rebuildCanvasFromHistory();
         if (isDrawer) sendSnapshot();
@@ -3813,6 +4332,7 @@
           return;
         }
 
+        beginHistoryStep();
         pointerDown = true;
         setDrawScrollLock(true);
         try {
@@ -3901,6 +4421,8 @@
 
         if (canvas.dataset.canDraw !== "1") {
           clearOverlay();
+          if (activeHistoryStep && activeHistoryStep.length) commitHistoryStep();
+          else cancelHistoryStep();
           startPt = null;
           lastPt = null;
           stabilizedPt = null;
@@ -3947,6 +4469,7 @@
         } else {
           sendSnapshot();
         }
+        commitHistoryStep();
 
         startPt = null;
         lastPt = null;
@@ -3964,10 +4487,26 @@
 
       btnLobby.addEventListener("click", confirmarSaidaParaLobby);
       document.addEventListener("keydown", (e) => {
+        const key = String(e.key || "").toLowerCase();
+        const ctrlOrMeta = e.ctrlKey || e.metaKey;
+        const isUndoShortcut = ctrlOrMeta && !e.altKey && !e.shiftKey && key === "z";
+        const isRedoShortcut = ctrlOrMeta && !e.altKey && (key === "y" || (e.shiftKey && key === "z"));
+        if (isUndoShortcut || isRedoShortcut) {
+          if (isTextEntryFocused()) return;
+          e.preventDefault();
+          if (isUndoShortcut) performUndoStep();
+          else performRedoStep();
+          return;
+        }
+
         if (e.key !== "Escape") return;
         if (afkOverlayEl && !afkOverlayEl.hidden) return;
         if (menuDropdownEl && !menuDropdownEl.hidden) {
           closeMenuDropdown();
+          return;
+        }
+        if (adminPlayerActionsOverlayEl && !adminPlayerActionsOverlayEl.hidden) {
+          if (!adminPlayerActionPending) closeAdminPlayerActions();
           return;
         }
         if (reportPlayerOverlayEl && !reportPlayerOverlayEl.hidden) {
@@ -4016,12 +4555,15 @@
         entrou = true;
         joinedRoomForUnloadWarning = true;
         skipBeforeUnloadWarning = false;
+        talkBoxEl.innerHTML = "";
+        guessBoxEl.innerHTML = "";
         const list = Array.isArray(players) ? players : [];
         lastRoomPresenceKeys = buildRoomPresenceKeySet(list);
         roomPresenceSfxReady = true;
         if (youIsAdmin === true || youIsAdmin === false) {
           myIsAdmin = youIsAdmin === true;
           renderMyNickName();
+          if (!myIsAdmin) closeAdminPlayerActions();
         }
         updatePlayersCountFromList(list);
         syncMyAdminFlagFromPlayers(list);
@@ -4051,7 +4593,7 @@
       socket.on("nickBlocked", ({ roomId: rid } = {}) => {
         if (rid && rid !== roomId) return;
         alert(`Esse nick é reservado. Chave inválida para "${nick}".`);
-        sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+        clearAllReservedNickKeys();
         limparToken();
         window.location.href = "/";
       });
@@ -4062,6 +4604,22 @@
         limparToken();
         window.location.href = "/";
       });
+
+      function isTextEntryFocused() {
+        const active = document.activeElement;
+        if (!active) return false;
+        const tag = String(active.tagName || "").toLowerCase();
+        return tag === "input" || tag === "textarea" || active.isContentEditable === true;
+      }
+
+      function detectMobileKeyboardOpen() {
+        if (!mobileClientLikely || !window.visualViewport) return false;
+        if (!isTextEntryFocused()) return false;
+        const viewportHeight = Number(window.visualViewport.height || 0);
+        const layoutHeight = Number(window.innerHeight || 0);
+        if (!viewportHeight || !layoutHeight) return false;
+        return (layoutHeight - viewportHeight) > 120;
+      }
 
       function updateBoardScale() {
         const limiteEl = document.getElementById("limite");
@@ -4080,8 +4638,27 @@
         const rootStyles = getComputedStyle(document.documentElement);
         const gutter = parseFloat(rootStyles.getPropertyValue("--gutter")) || 0;
 
-        const availableWidth = Math.max(1, window.innerWidth - (gutter * 2));
-        const availableHeight = Math.max(1, window.innerHeight - (gutter * 2));
+        const useVisualViewport = mobileClientLikely && !!window.visualViewport;
+        const viewportWidth = useVisualViewport
+          ? Number(window.visualViewport.width || window.innerWidth)
+          : Number(window.innerWidth || 0);
+        const viewportHeight = useVisualViewport
+          ? Number(window.visualViewport.height || window.innerHeight)
+          : Number(window.innerHeight || 0);
+
+        const keyboardOpen = detectMobileKeyboardOpen();
+        if (!keyboardOpen) {
+          mobileStableViewportHeight = Math.max(1, viewportHeight || window.innerHeight || 1);
+        }
+        mobileKeyboardLikelyOpen = keyboardOpen;
+        document.body.classList.toggle("mobile-keyboard-open", mobileKeyboardLikelyOpen);
+
+        const effectiveHeight = mobileKeyboardLikelyOpen
+          ? Math.max(1, mobileStableViewportHeight)
+          : Math.max(1, viewportHeight || window.innerHeight || 1);
+
+        const availableWidth = Math.max(1, viewportWidth - (gutter * 2));
+        const availableHeight = Math.max(1, effectiveHeight - (gutter * 2));
         const scale = Math.min(1, availableWidth / baseWidth, availableHeight / baseHeight);
 
         document.documentElement.style.setProperty("--board-w", `${baseWidth}px`);
@@ -4096,11 +4673,32 @@
         });
       }
 
+      function bindMobileKeyboardScaleGuards() {
+        if (!mobileClientLikely) return;
+
+        const queueScaleRefresh = () => {
+          setTimeout(updateBoardScale, 40);
+        };
+
+        if (talkInputEl) {
+          talkInputEl.addEventListener("focus", queueScaleRefresh, { passive: true });
+          talkInputEl.addEventListener("blur", queueScaleRefresh, { passive: true });
+        }
+        if (guessInputEl) {
+          guessInputEl.addEventListener("focus", queueScaleRefresh, { passive: true });
+          guessInputEl.addEventListener("blur", queueScaleRefresh, { passive: true });
+        }
+      }
+
       window.addEventListener("resize", updateBoardScale, { passive: true });
       window.addEventListener("load", updateBoardScale, { passive: true });
       if (window.visualViewport) {
         window.visualViewport.addEventListener("resize", updateBoardScale, { passive: true });
+        if (mobileClientLikely) {
+          window.visualViewport.addEventListener("scroll", updateBoardScale, { passive: true });
+        }
       }
+      bindMobileKeyboardScaleGuards();
       updateBoardScale();
 
       renderDrawerName(null);

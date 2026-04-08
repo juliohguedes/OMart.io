@@ -88,9 +88,8 @@
                         <tr><td>Mika</td><td>Samys_ys</td></tr>
                         <tr><td>Hexx</td><td>carol</td></tr>
                         <tr><td>geo_</td><td>mentiroso</td></tr>
-                        <tr><td>koyah</td><td>jxao44</td></tr>
                         <tr><td>venus</td><td>foca_legal</td></tr>
-                        <tr><td>andrezim</td><td><span class="supporterLogoName">miau-sensei</span></td></tr>
+                        <tr><td>andrezim</td><td>koyah</td></tr>
                     </tbody>
                 </table>
             </section>
@@ -167,8 +166,25 @@
         };
         const DEFAULT_ROOM_LIMIT = 12;
         const PREVIEW_POLL_MS = 2000;
-        const ADMIN_NICK_RESERVED = "Miau-Sensei";
-        const ADMIN_KEY_SESSION_KEY = "omart_admin_key";
+        const RESERVED_NICK_RULES = [
+            { nick: "Miau-Sensei", keySession: "omart_admin_key_miau_sensei" },
+            { nick: "Koyah_", keySession: "omart_admin_key_koyah" },
+            { nick: "Miau_", keySession: "omart_admin_key_miau_" }
+        ];
+        const RESERVED_NICK_RULES_BY_NORM = (() => {
+            const map = new Map();
+            RESERVED_NICK_RULES.forEach((rule) => {
+                const nick = String(rule && rule.nick ? rule.nick : "").trim();
+                if (!nick) return;
+                const key = nick.toLowerCase();
+                if (map.has(key)) return;
+                map.set(key, {
+                    nick,
+                    keySession: String(rule && rule.keySession ? rule.keySession : "").trim()
+                });
+            });
+            return map;
+        })();
 
         const roomsDiv = document.getElementById("rooms");
         const nickInput = document.getElementById("nick");
@@ -302,23 +318,38 @@
             return `tok-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
         }
 
+        function getReservedNickRule(nick) {
+            const key = String(nick || "").trim().toLowerCase();
+            if (!key) return null;
+            return RESERVED_NICK_RULES_BY_NORM.get(key) || null;
+        }
+
         function isReservedAdminNick(nick) {
-            return String(nick || "").trim().toLowerCase() === ADMIN_NICK_RESERVED.toLowerCase();
+            return !!getReservedNickRule(nick);
+        }
+
+        function clearAllReservedNickKeys() {
+            RESERVED_NICK_RULES.forEach((rule) => {
+                const storageKey = String(rule && rule.keySession ? rule.keySession : "").trim();
+                if (storageKey) sessionStorage.removeItem(storageKey);
+            });
         }
 
         function resolveAdminKeyForNick(nick) {
-            if (!isReservedAdminNick(nick)) {
-                sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+            const rule = getReservedNickRule(nick);
+            if (!rule) {
+                clearAllReservedNickKeys();
                 return "";
             }
 
-            const saved = String(sessionStorage.getItem(ADMIN_KEY_SESSION_KEY) || "").trim();
-            const typed = window.prompt(`Digite a chave para usar o nick "${ADMIN_NICK_RESERVED}":`, saved);
+            const storageKey = String(rule.keySession || "").trim();
+            const saved = storageKey ? String(sessionStorage.getItem(storageKey) || "").trim() : "";
+            const typed = window.prompt(`Digite a chave para usar o nick "${rule.nick}":`, saved);
             if (typed == null) return null;
             const key = String(typed).trim();
             if (!key) return null;
 
-            sessionStorage.setItem(ADMIN_KEY_SESSION_KEY, key);
+            if (storageKey) sessionStorage.setItem(storageKey, key);
             return key;
         }
 
@@ -328,11 +359,13 @@
             sessionStorage.setItem("omart_room", roomId);
             sessionStorage.setItem("omart_nick", nick);
 
-            if (isReservedAdminNick(nick)) {
-                const adminKey = String(sessionStorage.getItem(ADMIN_KEY_SESSION_KEY) || "").trim();
-                if (adminKey) sessionStorage.setItem(ADMIN_KEY_SESSION_KEY, adminKey);
+            const rule = getReservedNickRule(nick);
+            if (!rule) {
+                clearAllReservedNickKeys();
             } else {
-                sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+                const storageKey = String(rule.keySession || "").trim();
+                const adminKey = storageKey ? String(sessionStorage.getItem(storageKey) || "").trim() : "";
+                if (storageKey && !adminKey) sessionStorage.removeItem(storageKey);
             }
 
             window.location.href =
@@ -389,7 +422,7 @@
 
                     if (reason === "NICK_BLOCKED") {
                         setPreviewError("Esse nick e reservado. Chave invalida.");
-                        sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+                        clearAllReservedNickKeys();
                         return;
                     }
 
@@ -455,14 +488,14 @@
             if (reason === "nick_required") setPreviewError("Digite um nick");
             if (reason === "nick_blocked") {
                 setPreviewError("Esse nick e reservado. Chave invalida.");
-                sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+                clearAllReservedNickKeys();
             }
         });
 
         socket.on("nickBlocked", ({ roomId } = {}) => {
             if (selectedRoom && roomId && roomId !== selectedRoom) return;
             setPreviewError("Esse nick e reservado. Chave invalida.");
-            sessionStorage.removeItem(ADMIN_KEY_SESSION_KEY);
+            clearAllReservedNickKeys();
         });
 
         previewPlayBtn.addEventListener("click", validateAndPlay);
